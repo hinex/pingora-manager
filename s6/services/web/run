@@ -1,0 +1,3 @@
+#!/command/execlineb -P
+cd /opt/pingora-manager/web
+/usr/local/bin/bun run start

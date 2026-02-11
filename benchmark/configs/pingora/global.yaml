@@ -1,0 +1,9 @@
+listen:
+  http: 8080
+  https: 8443
+  admin: 8081
+admin_upstream: "127.0.0.1:9999"
+default_page: "/data/default-page/index.html"
+error_pages_dir: "/data/error-pages"
+logs_dir: "/data/logs"
+ssl_dir: "/data/ssl"

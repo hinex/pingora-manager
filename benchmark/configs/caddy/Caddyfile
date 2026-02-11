@@ -1,0 +1,10 @@
+:8080 {
+	handle /static/* {
+		root * /
+		file_server
+	}
+
+	handle {
+		reverse_proxy backend:3000
+	}
+}

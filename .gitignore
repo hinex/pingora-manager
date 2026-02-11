@@ -1,0 +1,40 @@
+# Rust
+proxy/target/
+proxy/**/*.rs.bk
+
+# Node/Bun
+web/node_modules/
+web/build/
+web/.cache/
+
+# Data (runtime, not committed)
+data/
+letsencrypt/
+
+# Benchmark results (generated, not committed)
+benchmark/results/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+
+# SQLite
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm

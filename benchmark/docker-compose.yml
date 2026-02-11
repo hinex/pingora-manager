@@ -1,0 +1,177 @@
+services:
+  # ─── Shared Backend (Bun) ─────────────────────────────
+  backend:
+    build: ./backend
+    volumes:
+      - ./backend/public:/app/public:ro
+    networks:
+      bench:
+        ipv4_address: 172.30.0.10
+    healthcheck:
+      test: ["CMD", "bun", "--eval", "fetch('http://localhost:3000/api/data').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  # ─── nginx ────────────────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    volumes:
+      - ./configs/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./backend/public:/public:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - bench
+    deploy:
+      resources:
+        limits:
+          cpus: "${BENCH_CPUS:-1.0}"
+          memory: "${BENCH_MEMORY:-256M}"
+        reservations:
+          cpus: "${BENCH_CPUS:-1.0}"
+          memory: "${BENCH_MEMORY:-256M}"
+
+  # ─── OpenResty ────────────────────────────────────────
+  openresty:
+    image: openresty/openresty:alpine
+    volumes:
+      - ./configs/openresty/nginx.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro
+      - ./backend/public:/public:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - bench
+    deploy:
+      resources:
+        limits:
+          cpus: "${BENCH_CPUS:-1.0}"
+          memory: "${BENCH_MEMORY:-256M}"
+        reservations:
+          cpus: "${BENCH_CPUS:-1.0}"
+          memory: "${BENCH_MEMORY:-256M}"
+
+  # ─── Caddy ───────────────────────────────────────────
+  caddy:
+    image: caddy:alpine
+    volumes:
+      - ./configs/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./backend/public:/static:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - bench
+    deploy:
+      resources:
+        limits:
+          cpus: "${BENCH_CPUS:-1.0}"
+          memory: "${BENCH_MEMORY:-256M}"
+        reservations:
+          cpus: "${BENCH_CPUS:-1.0}"
+          memory: "${BENCH_MEMORY:-256M}"
+
+  # ─── Envoy ──────────────────────────────────────────
+  envoy:
+    image: envoyproxy/envoy:v1.31-latest
+    volumes:
+      - ./configs/envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - bench
+    deploy:
+      resources:
+        limits:
+          cpus: "${BENCH_CPUS:-1.0}"
+          memory: "${BENCH_MEMORY:-256M}"
+        reservations:
+          cpus: "${BENCH_CPUS:-1.0}"
+          memory: "${BENCH_MEMORY:-256M}"
+
+  # ─── HAProxy ─────────────────────────────────────────
+  haproxy:
+    image: haproxy:alpine
+    volumes:
+      - ./configs/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - bench
+    deploy:
+      resources:
+        limits:
+          cpus: "${BENCH_CPUS:-1.0}"
+          memory: "${BENCH_MEMORY:-256M}"
+        reservations:
+          cpus: "${BENCH_CPUS:-1.0}"
+          memory: "${BENCH_MEMORY:-256M}"
+
+  # ─── OpenLiteSpeed ──────────────────────────────────
+  openlitespeed:
+    image: litespeedtech/openlitespeed:latest
+    entrypoint: ["/bin/sh", "-c", "mkdir -p /var/www/vhosts/benchmark/html && exec /entrypoint.sh"]
+    volumes:
+      - ./configs/openlitespeed/httpd_config.conf:/usr/local/lsws/conf/httpd_config.conf
+      - ./configs/openlitespeed/vhconf.conf:/usr/local/lsws/conf/vhosts/benchmark/vhconf.conf
+      - ./backend/public:/public:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - bench
+    deploy:
+      resources:
+        limits:
+          cpus: "${BENCH_CPUS:-1.0}"
+          memory: "${BENCH_MEMORY:-256M}"
+        reservations:
+          cpus: "${BENCH_CPUS:-1.0}"
+          memory: "${BENCH_MEMORY:-256M}"
+
+  # ─── Pingora ─────────────────────────────────────────
+  pingora:
+    build:
+      context: ..
+      dockerfile: benchmark/pingora/Dockerfile
+    volumes:
+      - ./configs/pingora:/data/configs:ro
+      - ./backend/public:/public:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - bench
+    deploy:
+      resources:
+        limits:
+          cpus: "${BENCH_CPUS:-1.0}"
+          memory: "${BENCH_MEMORY:-256M}"
+        reservations:
+          cpus: "${BENCH_CPUS:-1.0}"
+          memory: "${BENCH_MEMORY:-256M}"
+
+  # ─── wrk2 Benchmark Runner ──────────────────────────
+  wrk:
+    build: ./wrk
+    depends_on:
+      - nginx
+      - openresty
+      - caddy
+      - envoy
+      - haproxy
+      - openlitespeed
+      - pingora
+    networks:
+      - bench
+
+networks:
+  bench:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
