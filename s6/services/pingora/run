@@ -1,0 +1,2 @@
+#!/command/execlineb -P
+/opt/pingora-manager/proxy
