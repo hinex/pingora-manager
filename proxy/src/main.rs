@@ -896,3 +896,713 @@ fn main() {
 
     server.run_forever();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use config::*;
+    use std::collections::HashMap;
+    use std::net::IpAddr;
+
+    /// Build a ProxyApp with the given hosts, redirects, and access lists.
+    fn build_app(
+        hosts: Vec<HostConfig>,
+        redirects: Vec<RedirectConfig>,
+        access_lists: HashMap<u64, AccessListConfig>,
+    ) -> ProxyApp {
+        let global = GlobalConfig {
+            listen: ListenConfig { http: 80, https: 443, admin: 81 },
+            admin_upstream: "127.0.0.1:3001".to_string(),
+            default_page: "/data/default-page/index.html".to_string(),
+            error_pages_dir: "/data/error-pages".to_string(),
+            logs_dir: "/data/logs".to_string(),
+            ssl_dir: "/etc/letsencrypt".to_string(),
+        };
+        let config = AppConfig {
+            global,
+            hosts,
+            redirects,
+            streams: vec![],
+            access_lists,
+        };
+        let state = SharedState::build(config);
+        let swap = Arc::new(arc_swap::ArcSwap::from_pointee(state));
+        ProxyApp::new(swap)
+    }
+
+    fn host_with_upstream(id: u64, domains: &[&str]) -> HostConfig {
+        HostConfig {
+            id,
+            domains: domains.iter().map(|s| s.to_string()).collect(),
+            group_id: None,
+            ssl: None,
+            upstreams: vec![UpstreamConfig {
+                server: "10.0.0.1".to_string(),
+                port: 8080,
+                weight: 1,
+            }],
+            balance_method: "round_robin".to_string(),
+            locations: vec![],
+            hsts: false,
+            http2: false,
+            enabled: true,
+            access_list_id: None,
+        }
+    }
+
+    fn host_with_ssl_force_https(id: u64, domains: &[&str]) -> HostConfig {
+        HostConfig {
+            id,
+            domains: domains.iter().map(|s| s.to_string()).collect(),
+            group_id: None,
+            ssl: Some(SslConfig {
+                ssl_type: "letsencrypt".to_string(),
+                force_https: true,
+                cert_path: None,
+                key_path: None,
+            }),
+            upstreams: vec![UpstreamConfig {
+                server: "10.0.0.1".to_string(),
+                port: 8080,
+                weight: 1,
+            }],
+            balance_method: "round_robin".to_string(),
+            locations: vec![],
+            hsts: true,
+            http2: false,
+            enabled: true,
+            access_list_id: None,
+        }
+    }
+
+    fn host_with_acl(id: u64, domains: &[&str], acl_id: u64) -> HostConfig {
+        HostConfig {
+            id,
+            domains: domains.iter().map(|s| s.to_string()).collect(),
+            group_id: None,
+            ssl: None,
+            upstreams: vec![UpstreamConfig {
+                server: "10.0.0.1".to_string(),
+                port: 8080,
+                weight: 1,
+            }],
+            balance_method: "round_robin".to_string(),
+            locations: vec![],
+            hsts: false,
+            http2: false,
+            enabled: true,
+            access_list_id: Some(acl_id),
+        }
+    }
+
+    fn host_with_static_location(id: u64, domains: &[&str]) -> HostConfig {
+        HostConfig {
+            id,
+            domains: domains.iter().map(|s| s.to_string()).collect(),
+            group_id: Some(10),
+            ssl: None,
+            upstreams: vec![UpstreamConfig {
+                server: "10.0.0.1".to_string(),
+                port: 8080,
+                weight: 1,
+            }],
+            balance_method: "round_robin".to_string(),
+            locations: vec![LocationConfig {
+                path: "/static".to_string(),
+                match_type: "prefix".to_string(),
+                location_type: Some("static".to_string()),
+                upstreams: vec![],
+                static_dir: Some("/var/www/static".to_string()),
+                cache_expires: Some("30d".to_string()),
+                access_list_id: None,
+                balance_method: None,
+            }],
+            hsts: false,
+            http2: false,
+            enabled: true,
+            access_list_id: None,
+        }
+    }
+
+    fn host_no_upstream(id: u64, domains: &[&str]) -> HostConfig {
+        HostConfig {
+            id,
+            domains: domains.iter().map(|s| s.to_string()).collect(),
+            group_id: None,
+            ssl: None,
+            upstreams: vec![],
+            balance_method: "round_robin".to_string(),
+            locations: vec![],
+            hsts: false,
+            http2: false,
+            enabled: true,
+            access_list_id: None,
+        }
+    }
+
+    fn make_redirect(id: u64, domains: &[&str]) -> RedirectConfig {
+        RedirectConfig {
+            id,
+            domains: domains.iter().map(|s| s.to_string()).collect(),
+            forward_scheme: "https".to_string(),
+            forward_domain: "new.example.com".to_string(),
+            forward_path: "/".to_string(),
+            preserve_path: true,
+            status_code: 301,
+            enabled: true,
+        }
+    }
+
+    fn make_acl_deny_all(id: u64) -> AccessListConfig {
+        AccessListConfig {
+            id,
+            name: "deny-all".to_string(),
+            satisfy: "any".to_string(),
+            clients: vec![AccessListClient {
+                address: "all".to_string(),
+                directive: "deny".to_string(),
+            }],
+            auth: vec![],
+        }
+    }
+
+    fn make_acl_with_auth(id: u64) -> AccessListConfig {
+        AccessListConfig {
+            id,
+            name: "auth-required".to_string(),
+            satisfy: "any".to_string(),
+            clients: vec![],
+            auth: vec![AccessListAuthEntry {
+                username: "admin".to_string(),
+                password: "secret".to_string(),
+            }],
+        }
+    }
+
+    // ─── Admin port routing ─────────────────────────────────
+
+    #[test]
+    fn test_admin_port_routes_to_admin_upstream() {
+        let app = build_app(vec![], vec![], HashMap::new());
+        let action = app.resolve_request(Some("anything.com"), "/", Some(81), None, None);
+        match action {
+            RequestAction::Proxy { upstream_addr, .. } => {
+                assert_eq!(upstream_addr, "127.0.0.1:3001");
+            }
+            _ => panic!("expected Proxy for admin port"),
+        }
+    }
+
+    #[test]
+    fn test_admin_port_ignores_host_header() {
+        let app = build_app(
+            vec![host_with_upstream(1, &["evil.com"])],
+            vec![],
+            HashMap::new(),
+        );
+        // Even if host matches a configured host, admin port wins
+        let action = app.resolve_request(Some("evil.com"), "/", Some(81), None, None);
+        match action {
+            RequestAction::Proxy { upstream_addr, .. } => {
+                assert_eq!(upstream_addr, "127.0.0.1:3001");
+            }
+            _ => panic!("expected admin Proxy"),
+        }
+    }
+
+    // ─── ACME challenge ─────────────────────────────────────
+
+    #[test]
+    fn test_acme_challenge_path() {
+        let app = build_app(vec![], vec![], HashMap::new());
+        let action = app.resolve_request(
+            Some("example.com"),
+            "/.well-known/acme-challenge/some-token-123",
+            Some(80),
+            None,
+            None,
+        );
+        match action {
+            RequestAction::AcmeChallenge { token } => {
+                assert_eq!(token, "some-token-123");
+            }
+            _ => panic!("expected AcmeChallenge"),
+        }
+    }
+
+    #[test]
+    fn test_acme_challenge_empty_token_not_matched() {
+        let app = build_app(vec![], vec![], HashMap::new());
+        let action = app.resolve_request(
+            Some("example.com"),
+            "/.well-known/acme-challenge/",
+            Some(80),
+            None,
+            None,
+        );
+        // Empty token → not matched as ACME, falls through
+        assert!(!matches!(action, RequestAction::AcmeChallenge { .. }));
+    }
+
+    #[test]
+    fn test_acme_challenge_path_traversal_token() {
+        let app = build_app(vec![], vec![], HashMap::new());
+        let action = app.resolve_request(
+            Some("example.com"),
+            "/.well-known/acme-challenge/../../etc/passwd",
+            Some(80),
+            None,
+            None,
+        );
+        match action {
+            RequestAction::AcmeChallenge { token } => {
+                // Token contains traversal path — the file serving uses PathBuf::join
+                // which should be safe, but the token is stored as-is
+                assert!(token.contains(".."));
+            }
+            _ => panic!("expected AcmeChallenge"),
+        }
+    }
+
+    // ─── Redirect routing ───────────────────────────────────
+
+    #[test]
+    fn test_redirect_matched() {
+        let app = build_app(
+            vec![],
+            vec![make_redirect(1, &["old.com"])],
+            HashMap::new(),
+        );
+        let action = app.resolve_request(Some("old.com"), "/path", Some(80), None, None);
+        match action {
+            RequestAction::Redirect { status_code, location } => {
+                assert_eq!(status_code, 301);
+                assert_eq!(location, "https://new.example.com/path");
+            }
+            _ => panic!("expected Redirect"),
+        }
+    }
+
+    #[test]
+    fn test_redirect_takes_priority_over_host() {
+        // If both redirect and host match, redirect wins (checked first in resolve_request)
+        let app = build_app(
+            vec![host_with_upstream(1, &["clash.com"])],
+            vec![make_redirect(1, &["clash.com"])],
+            HashMap::new(),
+        );
+        let action = app.resolve_request(Some("clash.com"), "/", Some(80), None, None);
+        assert!(matches!(action, RequestAction::Redirect { .. }));
+    }
+
+    // ─── Unknown host → ServeDefault ────────────────────────
+
+    #[test]
+    fn test_unknown_host_serves_default() {
+        let app = build_app(vec![], vec![], HashMap::new());
+        let action = app.resolve_request(Some("unknown.com"), "/", Some(80), None, None);
+        assert!(matches!(action, RequestAction::ServeDefault { .. }));
+    }
+
+    #[test]
+    fn test_no_host_header_serves_default() {
+        let app = build_app(
+            vec![host_with_upstream(1, &["example.com"])],
+            vec![],
+            HashMap::new(),
+        );
+        let action = app.resolve_request(None, "/", Some(80), None, None);
+        assert!(matches!(action, RequestAction::ServeDefault { .. }));
+    }
+
+    #[test]
+    fn test_empty_host_header_serves_default() {
+        let app = build_app(
+            vec![host_with_upstream(1, &["example.com"])],
+            vec![],
+            HashMap::new(),
+        );
+        let action = app.resolve_request(Some(""), "/", Some(80), None, None);
+        assert!(matches!(action, RequestAction::ServeDefault { .. }));
+    }
+
+    // ─── Force HTTPS ────────────────────────────────────────
+
+    #[test]
+    fn test_force_https_on_http_port() {
+        let app = build_app(
+            vec![host_with_ssl_force_https(1, &["secure.com"])],
+            vec![],
+            HashMap::new(),
+        );
+        let action = app.resolve_request(Some("secure.com"), "/page", Some(80), None, None);
+        match action {
+            RequestAction::ForceHttps { location } => {
+                assert_eq!(location, "https://secure.com/page");
+            }
+            _ => panic!("expected ForceHttps"),
+        }
+    }
+
+    #[test]
+    fn test_force_https_not_on_https_port() {
+        let app = build_app(
+            vec![host_with_ssl_force_https(1, &["secure.com"])],
+            vec![],
+            HashMap::new(),
+        );
+        // On HTTPS port (443), should NOT force redirect, should proxy
+        let ip: IpAddr = "10.0.0.1".parse().unwrap();
+        let action = app.resolve_request(Some("secure.com"), "/page", Some(443), Some(ip), None);
+        assert!(matches!(action, RequestAction::Proxy { .. }));
+    }
+
+    // ─── Access control ─────────────────────────────────────
+
+    #[test]
+    fn test_access_denied_by_acl() {
+        let mut acls = HashMap::new();
+        acls.insert(1, make_acl_deny_all(1));
+
+        let app = build_app(
+            vec![host_with_acl(1, &["protected.com"], 1)],
+            vec![],
+            acls,
+        );
+        let ip: IpAddr = "1.2.3.4".parse().unwrap();
+        let action = app.resolve_request(Some("protected.com"), "/", Some(80), Some(ip), None);
+        assert!(matches!(action, RequestAction::AccessDenied { .. }));
+    }
+
+    #[test]
+    fn test_auth_required_by_acl() {
+        let mut acls = HashMap::new();
+        acls.insert(1, make_acl_with_auth(1));
+
+        let app = build_app(
+            vec![host_with_acl(1, &["auth.com"], 1)],
+            vec![],
+            acls,
+        );
+        let ip: IpAddr = "1.2.3.4".parse().unwrap();
+        // No auth header → AuthRequired
+        let action = app.resolve_request(Some("auth.com"), "/", Some(80), Some(ip), None);
+        assert!(matches!(action, RequestAction::AuthRequired));
+    }
+
+    #[test]
+    fn test_auth_passes_with_valid_credentials() {
+        let mut acls = HashMap::new();
+        acls.insert(1, make_acl_with_auth(1));
+
+        let app = build_app(
+            vec![host_with_acl(1, &["auth.com"], 1)],
+            vec![],
+            acls,
+        );
+        let ip: IpAddr = "1.2.3.4".parse().unwrap();
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode("admin:secret");
+        let auth = format!("Basic {}", encoded);
+        let action = app.resolve_request(Some("auth.com"), "/", Some(80), Some(ip), Some(&auth));
+        assert!(matches!(action, RequestAction::Proxy { .. }));
+    }
+
+    #[test]
+    fn test_auth_fails_with_wrong_password() {
+        let mut acls = HashMap::new();
+        acls.insert(1, make_acl_with_auth(1));
+
+        let app = build_app(
+            vec![host_with_acl(1, &["auth.com"], 1)],
+            vec![],
+            acls,
+        );
+        let ip: IpAddr = "1.2.3.4".parse().unwrap();
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode("admin:WRONG");
+        let auth = format!("Basic {}", encoded);
+        let action = app.resolve_request(Some("auth.com"), "/", Some(80), Some(ip), Some(&auth));
+        assert!(matches!(action, RequestAction::AuthRequired));
+    }
+
+    #[test]
+    fn test_acl_id_not_found_allows_access() {
+        // Host references ACL ID 999 which doesn't exist in the map → no check → allowed
+        let app = build_app(
+            vec![host_with_acl(1, &["x.com"], 999)],
+            vec![],
+            HashMap::new(),
+        );
+        let ip: IpAddr = "1.2.3.4".parse().unwrap();
+        let action = app.resolve_request(Some("x.com"), "/", Some(80), Some(ip), None);
+        assert!(matches!(action, RequestAction::Proxy { .. }));
+    }
+
+    // ─── Static file routing ────────────────────────────────
+
+    #[test]
+    fn test_static_location_matched() {
+        let app = build_app(
+            vec![host_with_static_location(1, &["static.com"])],
+            vec![],
+            HashMap::new(),
+        );
+        let ip: IpAddr = "10.0.0.1".parse().unwrap();
+        let action = app.resolve_request(Some("static.com"), "/static/file.js", Some(80), Some(ip), None);
+        match action {
+            RequestAction::ServeStatic { static_dir, location_path, cache_expires, .. } => {
+                assert_eq!(static_dir, "/var/www/static");
+                assert_eq!(location_path, "/static");
+                assert_eq!(cache_expires.unwrap(), "30d");
+            }
+            _ => panic!("expected ServeStatic"),
+        }
+    }
+
+    // ─── No upstream → NoUpstream (502) ─────────────────────
+
+    #[test]
+    fn test_no_upstream_returns_502() {
+        let app = build_app(
+            vec![host_no_upstream(1, &["empty.com"])],
+            vec![],
+            HashMap::new(),
+        );
+        let ip: IpAddr = "10.0.0.1".parse().unwrap();
+        let action = app.resolve_request(Some("empty.com"), "/", Some(80), Some(ip), None);
+        assert!(matches!(action, RequestAction::NoUpstream { .. }));
+    }
+
+    // ─── Security: malicious inputs to resolve_request ──────
+
+    #[test]
+    fn test_null_bytes_in_host() {
+        let app = build_app(
+            vec![host_with_upstream(1, &["example.com"])],
+            vec![],
+            HashMap::new(),
+        );
+        let action = app.resolve_request(
+            Some("example.com\0.evil.com"),
+            "/",
+            Some(80),
+            None,
+            None,
+        );
+        assert!(matches!(action, RequestAction::ServeDefault { .. }));
+    }
+
+    #[test]
+    fn test_very_long_host_header() {
+        let app = build_app(vec![], vec![], HashMap::new());
+        let long_host = "a".repeat(100_000);
+        let action = app.resolve_request(Some(&long_host), "/", Some(80), None, None);
+        assert!(matches!(action, RequestAction::ServeDefault { .. }));
+    }
+
+    #[test]
+    fn test_very_long_path() {
+        let app = build_app(
+            vec![host_with_upstream(1, &["x.com"])],
+            vec![],
+            HashMap::new(),
+        );
+        let long_path = format!("/{}", "a".repeat(100_000));
+        let ip: IpAddr = "10.0.0.1".parse().unwrap();
+        let action = app.resolve_request(Some("x.com"), &long_path, Some(80), Some(ip), None);
+        // Should proxy (host found, no location match)
+        assert!(matches!(action, RequestAction::Proxy { .. }));
+    }
+
+    #[test]
+    fn test_path_traversal_in_request() {
+        let app = build_app(
+            vec![host_with_upstream(1, &["x.com"])],
+            vec![],
+            HashMap::new(),
+        );
+        let ip: IpAddr = "10.0.0.1".parse().unwrap();
+        let action = app.resolve_request(Some("x.com"), "/../../../etc/passwd", Some(80), Some(ip), None);
+        assert!(matches!(action, RequestAction::Proxy { .. }));
+    }
+
+    #[test]
+    fn test_xss_in_host_header() {
+        let app = build_app(vec![], vec![], HashMap::new());
+        let action = app.resolve_request(
+            Some("<script>alert(1)</script>"),
+            "/",
+            Some(80),
+            None,
+            None,
+        );
+        assert!(matches!(action, RequestAction::ServeDefault { .. }));
+    }
+
+    #[test]
+    fn test_sql_injection_in_host() {
+        let app = build_app(vec![], vec![], HashMap::new());
+        let action = app.resolve_request(
+            Some("'; DROP TABLE hosts; --"),
+            "/",
+            Some(80),
+            None,
+            None,
+        );
+        assert!(matches!(action, RequestAction::ServeDefault { .. }));
+    }
+
+    #[test]
+    fn test_malformed_auth_header_doesnt_crash() {
+        let mut acls = HashMap::new();
+        acls.insert(1, make_acl_with_auth(1));
+
+        let app = build_app(
+            vec![host_with_acl(1, &["x.com"], 1)],
+            vec![],
+            acls,
+        );
+        let ip: IpAddr = "1.2.3.4".parse().unwrap();
+        // Garbage auth header
+        let action = app.resolve_request(
+            Some("x.com"),
+            "/",
+            Some(80),
+            Some(ip),
+            Some("NotBasic garbage!!!"),
+        );
+        assert!(matches!(action, RequestAction::AuthRequired));
+    }
+
+    #[test]
+    fn test_no_server_port_no_force_https() {
+        // If server_port is None, force_https check is skipped
+        let app = build_app(
+            vec![host_with_ssl_force_https(1, &["secure.com"])],
+            vec![],
+            HashMap::new(),
+        );
+        let ip: IpAddr = "10.0.0.1".parse().unwrap();
+        let action = app.resolve_request(Some("secure.com"), "/", None, Some(ip), None);
+        // No port → can't determine if HTTP, so force_https not triggered
+        assert!(matches!(action, RequestAction::Proxy { .. }));
+    }
+
+    #[test]
+    fn test_no_client_ip_for_lb() {
+        let app = build_app(
+            vec![host_with_upstream(1, &["x.com"])],
+            vec![],
+            HashMap::new(),
+        );
+        // No client IP → empty key for lb selection
+        let action = app.resolve_request(Some("x.com"), "/", Some(80), None, None);
+        assert!(matches!(action, RequestAction::Proxy { .. }));
+    }
+
+    #[test]
+    fn test_ipv6_client_ip() {
+        let app = build_app(
+            vec![host_with_upstream(1, &["x.com"])],
+            vec![],
+            HashMap::new(),
+        );
+        let ip: IpAddr = "::1".parse().unwrap();
+        let action = app.resolve_request(Some("x.com"), "/", Some(80), Some(ip), None);
+        assert!(matches!(action, RequestAction::Proxy { .. }));
+    }
+
+    #[test]
+    fn test_hsts_flag_propagated() {
+        let app = build_app(
+            vec![host_with_ssl_force_https(1, &["secure.com"])],
+            vec![],
+            HashMap::new(),
+        );
+        let ip: IpAddr = "10.0.0.1".parse().unwrap();
+        // On HTTPS port → no force redirect, but hsts should be set
+        let action = app.resolve_request(Some("secure.com"), "/", Some(443), Some(ip), None);
+        match action {
+            RequestAction::Proxy { hsts, .. } => {
+                assert!(hsts);
+            }
+            _ => panic!("expected Proxy"),
+        }
+    }
+
+    // ─── SharedState::build ─────────────────────────────────
+
+    #[test]
+    fn test_shared_state_build_empty_config() {
+        let config = AppConfig {
+            global: GlobalConfig {
+                listen: ListenConfig { http: 80, https: 443, admin: 81 },
+                admin_upstream: "127.0.0.1:3001".to_string(),
+                default_page: "/data/default-page/index.html".to_string(),
+                error_pages_dir: "/data/error-pages".to_string(),
+                logs_dir: "/data/logs".to_string(),
+                ssl_dir: "/etc/letsencrypt".to_string(),
+            },
+            hosts: vec![],
+            redirects: vec![],
+            streams: vec![],
+            access_lists: HashMap::new(),
+        };
+        let state = SharedState::build(config);
+        assert!(!state.ssl_manager.has_certs());
+        assert!(state.host_lbs.is_empty());
+        assert!(state.location_lbs.is_empty());
+    }
+
+    #[test]
+    fn test_shared_state_build_with_hosts_and_lbs() {
+        let host = HostConfig {
+            id: 1,
+            domains: vec!["x.com".to_string()],
+            group_id: None,
+            ssl: None,
+            upstreams: vec![UpstreamConfig {
+                server: "10.0.0.1".to_string(),
+                port: 8080,
+                weight: 1,
+            }],
+            balance_method: "round_robin".to_string(),
+            locations: vec![LocationConfig {
+                path: "/api".to_string(),
+                match_type: "prefix".to_string(),
+                location_type: Some("proxy".to_string()),
+                upstreams: vec![UpstreamConfig {
+                    server: "10.0.0.2".to_string(),
+                    port: 9090,
+                    weight: 1,
+                }],
+                static_dir: None,
+                cache_expires: None,
+                access_list_id: None,
+                balance_method: Some("ip_hash".to_string()),
+            }],
+            hsts: false,
+            http2: false,
+            enabled: true,
+            access_list_id: None,
+        };
+        let config = AppConfig {
+            global: GlobalConfig {
+                listen: ListenConfig { http: 80, https: 443, admin: 81 },
+                admin_upstream: "127.0.0.1:3001".to_string(),
+                default_page: "/data/default-page/index.html".to_string(),
+                error_pages_dir: "/data/error-pages".to_string(),
+                logs_dir: "/data/logs".to_string(),
+                ssl_dir: "/etc/letsencrypt".to_string(),
+            },
+            hosts: vec![host],
+            redirects: vec![],
+            streams: vec![],
+            access_lists: HashMap::new(),
+        };
+        let state = SharedState::build(config);
+        assert!(state.host_lbs.contains_key(&1));
+        assert!(state.location_lbs.contains_key(&(1, 0)));
+    }
+}

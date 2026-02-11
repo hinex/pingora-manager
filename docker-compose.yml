@@ -1,7 +1,7 @@
 services:
   pingora-manager:
     build: .
-    image: hardskilled/pingora-manager:latest
+    image: hinex/pingora-manager:latest
     restart: unless-stopped
     ports:
       - '80:80'
