@@ -64,7 +64,7 @@ export async function action({ request }: Route.ActionArgs) {
     ipAddress: request.headers.get("x-forwarded-for") || request.headers.get("x-real-ip") || "unknown",
   });
 
-  const redirectTo = user.mustChangePassword ? "/admin/change-password" : "/admin";
+  const redirectTo = user.mustChangePassword ? "/admin/setup" : "/admin";
 
   return redirect(redirectTo, {
     headers: {

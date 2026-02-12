@@ -28,4 +28,5 @@ export default [
       route("change-password", "./routes/admin/change-password.tsx"),
     ]),
   ]),
+  route("admin/setup", "./routes/admin/setup.tsx"),
 ] satisfies RouteConfig;

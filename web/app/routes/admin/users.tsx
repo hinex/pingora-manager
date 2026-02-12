@@ -42,9 +42,10 @@ export function meta() {
 }
 
 export async function loader({ request }: Route.LoaderArgs) {
-  await requireAdmin(request);
+  const currentUser = await requireAdmin(request);
   const allUsers = db.select().from(users).all();
   return {
+    currentUserId: currentUser.userId,
     users: allUsers.map((u) => ({
       id: u.id,
       email: u.email,
@@ -133,12 +134,17 @@ export async function action({ request }: Route.ActionArgs) {
       return { error: "Password must be at least 8 characters" };
     }
 
+    const isSelf = id === currentUser.userId;
+
     const updateData: Record<string, unknown> = {
       email,
       name,
-      role: role as "admin" | "editor" | "viewer",
       updatedAt: new Date(),
     };
+
+    if (!isSelf) {
+      updateData.role = role as "admin" | "editor" | "viewer";
+    }
 
     if (password) {
       updateData.password = await Bun.password.hash(password, {
@@ -181,7 +187,7 @@ export async function action({ request }: Route.ActionArgs) {
 }
 
 export default function UsersPage({ loaderData }: Route.ComponentProps) {
-  const { users: userList } = loaderData;
+  const { users: userList, currentUserId } = loaderData;
   const [showModal, setShowModal] = useState(false);
   const [editUser, setEditUser] = useState<(typeof userList)[0] | null>(null);
 
@@ -238,6 +244,7 @@ export default function UsersPage({ loaderData }: Route.ComponentProps) {
         user={editUser}
         open={showModal}
         onClose={() => setShowModal(false)}
+        isSelf={editUser?.id === currentUserId}
       />
     </div>
   );
@@ -335,10 +342,12 @@ function UserModal({
   user,
   open,
   onClose,
+  isSelf,
 }: {
   user: { id: number; name: string; email: string; role: string } | null;
   open: boolean;
   onClose: () => void;
+  isSelf: boolean;
 }) {
   const fetcher = useFetcher();
   const isSubmitting = fetcher.state !== "idle";
@@ -436,16 +445,23 @@ function UserModal({
 
             <div className="space-y-2">
               <Label htmlFor="role">Role</Label>
+              {isSelf && <input type="hidden" name="role" value={user?.role} />}
               <select
                 id="role"
-                name="role"
+                name={isSelf ? undefined : "role"}
                 defaultValue={user?.role ?? "viewer"}
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                disabled={isSelf}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <option value="admin">Admin</option>
                 <option value="editor">Editor</option>
                 <option value="viewer">Viewer</option>
               </select>
+              {isSelf && (
+                <p className="text-xs text-muted-foreground">
+                  You cannot change your own role.
+                </p>
+              )}
             </div>
           </div>
 

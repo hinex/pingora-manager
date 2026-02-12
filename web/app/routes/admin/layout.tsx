@@ -1,4 +1,4 @@
-import { Outlet, redirect, Link } from "react-router";
+import { Outlet, redirect, Link, useFetcher } from "react-router";
 import type { Route } from "./+types/layout";
 import { getSessionUser } from "~/lib/auth/session.server";
 import { Sidebar, MobileSidebar } from "~/components/Sidebar";
@@ -29,6 +29,7 @@ export async function loader({ request }: Route.LoaderArgs) {
 export default function AdminLayout({ loaderData }: Route.ComponentProps) {
   const sidebarOpen = useUIStore((s) => s.sidebarOpen);
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
+  const logoutFetcher = useFetcher();
 
   return (
     <TooltipProvider delayDuration={0}>
@@ -76,16 +77,16 @@ export default function AdminLayout({ loaderData }: Route.ComponentProps) {
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem asChild>
-                  <form method="post" action="/logout" className="w-full">
-                    <button
-                      type="submit"
-                      className="flex w-full items-center gap-2"
-                    >
-                      <LogOut className="h-4 w-4" />
-                      Logout
-                    </button>
-                  </form>
+                <DropdownMenuItem
+                  onClick={() =>
+                    logoutFetcher.submit(null, {
+                      method: "post",
+                      action: "/logout",
+                    })
+                  }
+                >
+                  <LogOut className="h-4 w-4" />
+                  Logout
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
