@@ -1,10 +1,11 @@
 import type { Route } from "./+types/dashboard";
 import { db } from "~/lib/db/connection";
-import { proxyHosts, hostGroups, streams, redirections, healthChecks } from "~/lib/db/schema";
+import { hosts, hostGroups, healthChecks } from "~/lib/db/schema";
 import { sql, desc } from "drizzle-orm";
 import { Card, CardContent } from "~/components/ui/card";
 import {
   Globe,
+  HardDrive,
   FolderOpen,
   Radio,
   ArrowRightLeft,
@@ -19,10 +20,12 @@ export function meta() {
 }
 
 export async function loader({}: Route.LoaderArgs) {
-  const hostCount = db.select({ count: sql<number>`count(*)` }).from(proxyHosts).get();
+  const hostsByType = db.select().from(hosts).all();
+  const proxyCount = hostsByType.filter(h => h.type === "proxy").length;
+  const staticCount = hostsByType.filter(h => h.type === "static").length;
+  const streamCount = hostsByType.filter(h => h.type === "stream").length;
+  const redirectCount = hostsByType.filter(h => h.type === "redirect").length;
   const groupCount = db.select({ count: sql<number>`count(*)` }).from(hostGroups).get();
-  const streamCount = db.select({ count: sql<number>`count(*)` }).from(streams).get();
-  const redirectCount = db.select({ count: sql<number>`count(*)` }).from(redirections).get();
 
   const latestHealth = db
     .select()
@@ -42,10 +45,11 @@ export async function loader({}: Route.LoaderArgs) {
   const downCount = [...upstreamStatus.values()].filter((s) => s.status === "down").length;
 
   return {
-    hosts: hostCount?.count ?? 0,
+    proxies: proxyCount,
+    statics: staticCount,
     groups: groupCount?.count ?? 0,
-    streams: streamCount?.count ?? 0,
-    redirects: redirectCount?.count ?? 0,
+    streams: streamCount,
+    redirects: redirectCount,
     upstreamsUp: upCount,
     upstreamsDown: downCount,
   };
@@ -59,8 +63,9 @@ export default function Dashboard({ loaderData }: Route.ComponentProps) {
       <div className="flex items-center min-h-10 mb-6">
         <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
       </div>
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-        <StatCard label="Proxy Hosts" value={d.hosts} icon={Globe} />
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-4">
+        <StatCard label="Proxy Hosts" value={d.proxies} icon={Globe} />
+        <StatCard label="Static Sites" value={d.statics} icon={HardDrive} />
         <StatCard label="Groups" value={d.groups} icon={FolderOpen} />
         <StatCard label="Streams" value={d.streams} icon={Radio} />
         <StatCard label="Redirections" value={d.redirects} icon={ArrowRightLeft} />
