@@ -2,14 +2,10 @@ import { NavLink } from "react-router";
 import {
   LayoutDashboard,
   Globe,
-  FolderOpen,
-  ArrowRightLeft,
-  Radio,
   ShieldCheck,
   Lock,
   AlertTriangle,
   FileText,
-  HardDrive,
   Terminal,
   HeartPulse,
   ScrollText,
@@ -58,10 +54,7 @@ const navSections: NavSection[] = [
   {
     title: "Proxy",
     items: [
-      { to: "/admin/proxy-hosts", label: "Proxy Hosts", icon: Globe },
-      { to: "/admin/groups", label: "Groups", icon: FolderOpen },
-      { to: "/admin/redirections", label: "Redirections", icon: ArrowRightLeft },
-      { to: "/admin/streams", label: "Streams", icon: Radio },
+      { to: "/admin/hosts", label: "Hosts", icon: Globe },
     ],
   },
   {
@@ -71,7 +64,6 @@ const navSections: NavSection[] = [
       { to: "/admin/access-lists", label: "Access Lists", icon: Lock },
       { to: "/admin/error-pages", label: "Error Pages", icon: AlertTriangle },
       { to: "/admin/default-page", label: "Default Page", icon: FileText },
-      { to: "/admin/static", label: "Static Dirs", icon: HardDrive },
     ],
   },
   {
