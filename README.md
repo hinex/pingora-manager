@@ -6,6 +6,7 @@ Similar to Nginx Proxy Manager, but powered by Pingora — a battle-tested proxy
 
 ## Features
 
+- **Unified Hosts Management** — Manage proxy, static, redirect, and stream hosts from a single page with type selector, grouped views, color labels, and fuzzy search
 - **HTTP/HTTPS Reverse Proxy** — Domain-based routing with SNI, path matching (prefix, exact, regex), and custom headers
 - **SSL/TLS** — Let's Encrypt (ACME HTTP-01), custom certificates, force HTTPS, HSTS
 - **Load Balancing** — Round robin, weighted, least connections, IP hash, random
@@ -123,16 +124,12 @@ services:
 
 | Page | Description |
 |------|-------------|
-| **Dashboard** | Overview of proxy hosts, redirections, and streams |
-| **Proxy Hosts** | Create/edit reverse proxy configurations with domains, upstreams, SSL, locations |
-| **Groups** | Organize hosts into logical groups |
-| **Redirections** | HTTP redirect rules (301/302/307/308) |
-| **Streams** | TCP/UDP stream proxy configurations |
+| **Dashboard** | Overview of all host types, groups, and upstream health |
+| **Hosts** | Unified management of proxy, static, redirect, and stream hosts — with group/flat view toggle, color labels, and fuzzy search |
 | **SSL Certificates** | Manage Let's Encrypt and custom certificates |
 | **Access Lists** | IP-based and Basic Auth access control rules |
 | **Error Pages** | Upload custom HTML error pages |
 | **Default Page** | Edit the page shown for unconfigured domains |
-| **Static Dirs** | Map URL paths to local directories |
 | **Logs** | View proxy access logs |
 | **Health** | Monitor upstream server health |
 | **Audit Log** | Track configuration changes |
@@ -177,6 +174,28 @@ locations:
     staticDir: /data/static/example
     cacheExpires: 30d
 hsts: true
+http2: true
+enabled: true
+```
+
+### Static Host Example
+
+```yaml
+id: 2
+domains:
+  - static.example.com
+ssl:
+  type: none
+  force_https: false
+upstreams: []
+balance_method: round_robin
+locations:
+  - path: /
+    matchType: prefix
+    type: static
+    staticDir: /data/static/mysite
+    cacheExpires: 30d
+hsts: false
 http2: true
 enabled: true
 ```
@@ -319,6 +338,7 @@ docker build -t pingora-manager .
 - [Drizzle ORM](https://orm.drizzle.team) + SQLite
 - [Bun](https://bun.sh) runtime
 - [Jose](https://github.com/panva/jose) — JWT authentication
+- [Fuse.js](https://www.fusejs.io) — Client-side fuzzy search
 
 ### Infrastructure
 - [s6-overlay](https://github.com/just-containers/s6-overlay) — Process supervisor

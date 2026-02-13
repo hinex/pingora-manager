@@ -5,13 +5,14 @@ vi.mock("~/lib/db/connection", () => ({ db: {} }));
 vi.mock("~/lib/db/schema", () => ({}));
 
 import {
-  buildHostConfig,
+  buildProxyHostConfig,
+  buildStaticHostConfig,
   buildRedirectConfig,
   buildStreamConfig,
   buildGlobalConfig,
 } from "./generate";
 
-describe("buildHostConfig", () => {
+describe("buildProxyHostConfig", () => {
   const host = {
     id: 1,
     groupId: 5,
@@ -30,7 +31,7 @@ describe("buildHostConfig", () => {
   } as any;
 
   it("maps domains array and camelCase fields to snake_case", () => {
-    const cfg = buildHostConfig(host);
+    const cfg = buildProxyHostConfig(host);
     expect(cfg.domains).toEqual(["example.com", "www.example.com"]);
     expect(cfg.group_id).toBe(5);
     expect(cfg.balance_method).toBe("round_robin");
@@ -38,13 +39,58 @@ describe("buildHostConfig", () => {
   });
 
   it("maps SSL fields into nested object", () => {
-    const cfg = buildHostConfig(host);
+    const cfg = buildProxyHostConfig(host);
     expect(cfg.ssl).toEqual({
       type: "letsencrypt",
       force_https: true,
       cert_path: "/etc/letsencrypt/live/example.com/fullchain.pem",
       key_path: "/etc/letsencrypt/live/example.com/privkey.pem",
     });
+  });
+});
+
+describe("buildStaticHostConfig", () => {
+  const host = {
+    id: 2,
+    groupId: null,
+    domains: ["static.example.com"],
+    sslType: "none",
+    sslForceHttps: false,
+    sslCertPath: null,
+    sslKeyPath: null,
+    staticDir: "/var/www/html",
+    cacheExpires: "30d",
+    hsts: false,
+    http2: true,
+    advancedYaml: null,
+    enabled: true,
+  } as any;
+
+  it("creates a single static location from staticDir and cacheExpires", () => {
+    const cfg = buildStaticHostConfig(host);
+    expect(cfg.locations).toHaveLength(1);
+    expect(cfg.locations[0]).toEqual({
+      path: "/",
+      matchType: "prefix",
+      type: "static",
+      staticDir: "/var/www/html",
+      cacheExpires: "30d",
+    });
+  });
+
+  it("sets upstreams to empty array and balance_method to round_robin", () => {
+    const cfg = buildStaticHostConfig(host);
+    expect(cfg.upstreams).toEqual([]);
+    expect(cfg.balance_method).toBe("round_robin");
+  });
+
+  it("maps SSL and common fields correctly", () => {
+    const cfg = buildStaticHostConfig(host);
+    expect(cfg.domains).toEqual(["static.example.com"]);
+    expect(cfg.ssl.type).toBe("none");
+    expect(cfg.hsts).toBe(false);
+    expect(cfg.http2).toBe(true);
+    expect(cfg.enabled).toBe(true);
   });
 });
 
@@ -109,7 +155,7 @@ describe("buildGlobalConfig", () => {
 
 // ─── Security: malicious / edge-case inputs ──────────────
 
-describe("buildHostConfig edge cases", () => {
+describe("buildProxyHostConfig edge cases", () => {
   it("handles XSS in domain names", () => {
     const host = {
       id: 1,
@@ -127,7 +173,7 @@ describe("buildHostConfig edge cases", () => {
       advancedYaml: null,
       enabled: true,
     } as any;
-    const cfg = buildHostConfig(host);
+    const cfg = buildProxyHostConfig(host);
     // Should pass through as-is (YAML serialization handles escaping)
     expect(cfg.domains[0]).toBe("<script>alert(1)</script>.com");
   });
@@ -149,7 +195,7 @@ describe("buildHostConfig edge cases", () => {
       advancedYaml: null,
       enabled: true,
     } as any;
-    const cfg = buildHostConfig(host);
+    const cfg = buildProxyHostConfig(host);
     // Builder is pure — it maps data, doesn't validate paths
     // Validation must happen at the API/form level
     expect(cfg.ssl.cert_path).toBe("../../../etc/shadow");
@@ -173,7 +219,7 @@ describe("buildHostConfig edge cases", () => {
       advancedYaml: null,
       enabled: false,
     } as any;
-    const cfg = buildHostConfig(host);
+    const cfg = buildProxyHostConfig(host);
     expect(cfg.domains).toEqual([]);
     expect(cfg.enabled).toBe(false);
   });
@@ -195,7 +241,7 @@ describe("buildHostConfig edge cases", () => {
       advancedYaml: "malicious:\n  - command: rm -rf /",
       enabled: true,
     } as any;
-    const cfg = buildHostConfig(host);
+    const cfg = buildProxyHostConfig(host);
     // Builder preserves the raw YAML string — Rust parser must sanitize
     expect(cfg.advanced_yaml).toContain("rm -rf /");
   });
