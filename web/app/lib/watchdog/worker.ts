@@ -1,7 +1,6 @@
 import { db } from "~/lib/db/connection";
 import {
-  proxyHosts,
-  streams,
+  hosts,
   hostGroups,
   healthChecks,
   settings,
@@ -63,17 +62,14 @@ function getLatestStatus(
 
 async function runChecks() {
   try {
-    const allProxyHosts = db
+    const enabledHosts = db
       .select()
-      .from(proxyHosts)
-      .where(eq(proxyHosts.enabled, true))
+      .from(hosts)
+      .where(eq(hosts.enabled, true))
       .all();
 
-    const allStreams = db
-      .select()
-      .from(streams)
-      .where(eq(streams.enabled, true))
-      .all();
+    const allProxyHosts = enabledHosts.filter(h => h.type === "proxy");
+    const allStreams = enabledHosts.filter(h => h.type === "stream");
 
     // Check proxy host upstreams
     for (const host of allProxyHosts) {

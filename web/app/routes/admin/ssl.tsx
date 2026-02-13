@@ -1,6 +1,6 @@
 import type { Route } from "./+types/ssl";
 import { db } from "~/lib/db/connection";
-import { proxyHosts } from "~/lib/db/schema";
+import { hosts } from "~/lib/db/schema";
 import { existsSync, readFileSync } from "fs";
 import { useFetcher } from "react-router";
 import { useState, useEffect } from "react";
@@ -40,8 +40,8 @@ export function meta() {
 }
 
 export async function loader({}: Route.LoaderArgs) {
-  const hosts = db.select().from(proxyHosts).all();
-  const sslHosts = hosts
+  const allHosts = db.select().from(hosts).all();
+  const sslHosts = allHosts
     .filter((h) => h.sslType !== "none")
     .map((h) => {
       const domains = h.domains as string[];
@@ -74,14 +74,14 @@ export async function action({ request }: Route.ActionArgs) {
       return { error: "Certificate and key paths are required" };
     }
 
-    db.update(proxyHosts)
+    db.update(hosts)
       .set({
         sslType: "custom",
         sslCertPath: certPath,
         sslKeyPath: keyPath,
         updatedAt: new Date(),
       })
-      .where(eq(proxyHosts.id, id))
+      .where(eq(hosts.id, id))
       .run();
 
     generateAllConfigs();
@@ -90,7 +90,7 @@ export async function action({ request }: Route.ActionArgs) {
 
   if (intent === "request") {
     const id = Number(formData.get("id"));
-    const host = db.select().from(proxyHosts).where(eq(proxyHosts.id, id)).get();
+    const host = db.select().from(hosts).where(eq(hosts.id, id)).get();
     if (!host) {
       return { error: "Host not found" };
     }
@@ -100,13 +100,13 @@ export async function action({ request }: Route.ActionArgs) {
     const result = await requestCertificate(domains, staging);
 
     if (result.success && result.certPath && result.keyPath) {
-      db.update(proxyHosts)
+      db.update(hosts)
         .set({
           sslCertPath: result.certPath,
           sslKeyPath: result.keyPath,
           updatedAt: new Date(),
         })
-        .where(eq(proxyHosts.id, id))
+        .where(eq(hosts.id, id))
         .run();
 
       generateAllConfigs();

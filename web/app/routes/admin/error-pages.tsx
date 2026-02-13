@@ -1,7 +1,7 @@
 import type { Route } from "./+types/error-pages";
 import { Form, useActionData, useNavigation } from "react-router";
 import { db } from "~/lib/db/connection";
-import { proxyHosts, hostGroups } from "~/lib/db/schema";
+import { hosts, hostGroups } from "~/lib/db/schema";
 import { useState, useEffect } from "react";
 import {
   readFileSync,
@@ -24,8 +24,8 @@ export function meta() {
 
 export async function loader({}: Route.LoaderArgs) {
   const groups = db.select().from(hostGroups).all();
-  const hosts = db.select().from(proxyHosts).all();
-  return { groups, hosts };
+  const allHosts = db.select().from(hosts).all();
+  return { groups, hosts: allHosts };
 }
 
 export async function action({ request }: Route.ActionArgs) {

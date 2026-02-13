@@ -1,6 +1,6 @@
 import type { Route } from "./+types/logs";
 import { db } from "~/lib/db/connection";
-import { proxyHosts } from "~/lib/db/schema";
+import { hosts } from "~/lib/db/schema";
 import { useState, useEffect, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
@@ -15,9 +15,9 @@ export function meta() {
 }
 
 export async function loader({}: Route.LoaderArgs) {
-  const hosts = db.select().from(proxyHosts).all();
+  const allHosts = db.select().from(hosts).all();
   return {
-    hosts: hosts.map((h) => ({
+    hosts: allHosts.map((h) => ({
       id: h.id,
       domains: h.domains as string[],
     })),
