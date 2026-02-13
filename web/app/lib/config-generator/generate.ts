@@ -1,9 +1,7 @@
 import { stringify } from "yaml";
 import { db } from "~/lib/db/connection";
 import {
-  proxyHosts,
-  redirections,
-  streams,
+  hosts,
   accessLists,
   accessListClients,
   accessListAuth,
@@ -31,23 +29,26 @@ export function generateAllConfigs() {
   generateGlobalConfig();
   generateAccessListsConfig();
 
-  const hosts = db.select().from(proxyHosts).all();
-  for (const host of hosts) {
-    generateHostConfig(host);
-  }
-
-  const redirects = db.select().from(redirections).all();
-  for (const r of redirects) {
-    generateRedirectConfig(r);
-  }
-
-  const allStreams = db.select().from(streams).all();
-  for (const s of allStreams) {
-    generateStreamConfig(s);
+  const allHosts = db.select().from(hosts).all();
+  for (const host of allHosts) {
+    switch (host.type) {
+      case "proxy":
+        generateProxyHostConfig(host);
+        break;
+      case "static":
+        generateStaticHostConfig(host);
+        break;
+      case "redirect":
+        generateRedirectConfig(host);
+        break;
+      case "stream":
+        generateStreamConfig(host);
+        break;
+    }
   }
 }
 
-export function buildHostConfig(host: typeof proxyHosts.$inferSelect) {
+export function buildProxyHostConfig(host: typeof hosts.$inferSelect) {
   return {
     id: host.id,
     domains: host.domains,
@@ -68,14 +69,84 @@ export function buildHostConfig(host: typeof proxyHosts.$inferSelect) {
   };
 }
 
-export function generateHostConfig(host: typeof proxyHosts.$inferSelect) {
-  mkdirSync(CONFIGS_DIR, { recursive: true });
-  const config = buildHostConfig(host);
+function generateProxyHostConfig(host: typeof hosts.$inferSelect) {
+  const config = buildProxyHostConfig(host);
   writeFileSync(join(CONFIGS_DIR, `host-${host.id}.yaml`), stringify(config));
+}
+
+export function buildStaticHostConfig(host: typeof hosts.$inferSelect) {
+  return {
+    id: host.id,
+    domains: host.domains,
+    group_id: host.groupId,
+    ssl: {
+      type: host.sslType,
+      force_https: host.sslForceHttps,
+      cert_path: host.sslCertPath,
+      key_path: host.sslKeyPath,
+    },
+    upstreams: [],
+    balance_method: "round_robin",
+    locations: [
+      {
+        path: "/",
+        matchType: "prefix",
+        type: "static",
+        staticDir: host.staticDir,
+        cacheExpires: host.cacheExpires,
+      },
+    ],
+    hsts: host.hsts,
+    http2: host.http2,
+    advanced_yaml: host.advancedYaml,
+    enabled: host.enabled,
+  };
+}
+
+function generateStaticHostConfig(host: typeof hosts.$inferSelect) {
+  const config = buildStaticHostConfig(host);
+  writeFileSync(join(CONFIGS_DIR, `host-${host.id}.yaml`), stringify(config));
+}
+
+export function buildRedirectConfig(host: typeof hosts.$inferSelect) {
+  return {
+    id: host.id,
+    domains: host.domains,
+    forward_scheme: host.forwardScheme,
+    forward_domain: host.forwardDomain,
+    forward_path: host.forwardPath,
+    preserve_path: host.preservePath,
+    status_code: host.statusCode,
+    ssl_type: host.sslType,
+    enabled: host.enabled,
+  };
+}
+
+function generateRedirectConfig(host: typeof hosts.$inferSelect) {
+  const config = buildRedirectConfig(host);
+  writeFileSync(join(CONFIGS_DIR, `redirect-${host.id}.yaml`), stringify(config));
+}
+
+export function buildStreamConfig(host: typeof hosts.$inferSelect) {
+  return {
+    id: host.id,
+    incoming_port: host.incomingPort,
+    protocol: host.protocol,
+    upstreams: host.upstreams,
+    balance_method: host.balanceMethod,
+    enabled: host.enabled,
+  };
+}
+
+function generateStreamConfig(host: typeof hosts.$inferSelect) {
+  const config = buildStreamConfig(host);
+  writeFileSync(join(CONFIGS_DIR, `stream-${host.id}.yaml`), stringify(config));
 }
 
 export function removeHostConfig(id: number) {
   try { unlinkSync(join(CONFIGS_DIR, `host-${id}.yaml`)); } catch {}
+  try { unlinkSync(join(CONFIGS_DIR, `redirect-${id}.yaml`)); } catch {}
+  try { unlinkSync(join(CONFIGS_DIR, `stream-${id}.yaml`)); } catch {}
 }
 
 export function buildGlobalConfig(settingsMap: Record<string, string>) {
@@ -119,47 +190,4 @@ function generateAccessListsConfig() {
     };
   });
   writeFileSync(join(CONFIGS_DIR, "access-lists.yaml"), stringify(result));
-}
-
-export function buildRedirectConfig(r: typeof redirections.$inferSelect) {
-  return {
-    id: r.id,
-    domains: r.domains,
-    forward_scheme: r.forwardScheme,
-    forward_domain: r.forwardDomain,
-    forward_path: r.forwardPath,
-    preserve_path: r.preservePath,
-    status_code: r.statusCode,
-    ssl_type: r.sslType,
-    enabled: r.enabled,
-  };
-}
-
-function generateRedirectConfig(r: typeof redirections.$inferSelect) {
-  const config = buildRedirectConfig(r);
-  writeFileSync(join(CONFIGS_DIR, `redirect-${r.id}.yaml`), stringify(config));
-}
-
-export function removeRedirectConfig(id: number) {
-  try { unlinkSync(join(CONFIGS_DIR, `redirect-${id}.yaml`)); } catch {}
-}
-
-export function buildStreamConfig(s: typeof streams.$inferSelect) {
-  return {
-    id: s.id,
-    incoming_port: s.incomingPort,
-    protocol: s.protocol,
-    upstreams: s.upstreams,
-    balance_method: s.balanceMethod,
-    enabled: s.enabled,
-  };
-}
-
-function generateStreamConfig(s: typeof streams.$inferSelect) {
-  const config = buildStreamConfig(s);
-  writeFileSync(join(CONFIGS_DIR, `stream-${s.id}.yaml`), stringify(config));
-}
-
-export function removeStreamConfig(id: number) {
-  try { unlinkSync(join(CONFIGS_DIR, `stream-${id}.yaml`)); } catch {}
 }
