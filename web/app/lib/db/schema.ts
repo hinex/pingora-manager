@@ -31,13 +31,19 @@ export const hostGroups = sqliteTable("host_groups", {
     .$defaultFn(() => new Date()),
 });
 
-// ─── Proxy Hosts ─────────────────────────────────────────
-export const proxyHosts = sqliteTable("proxy_hosts", {
+// ─── Hosts (unified) ────────────────────────────────────
+export const hosts = sqliteTable("hosts", {
   id: integer("id").primaryKey({ autoIncrement: true }),
+  type: text("type", { enum: ["proxy", "static", "redirect", "stream"] })
+    .notNull()
+    .default("proxy"),
   groupId: integer("group_id").references(() => hostGroups.id, { onDelete: "set null" }),
   domains: text("domains", { mode: "json" })
     .$type<string[]>()
     .notNull(),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+
+  // SSL (shared by proxy, static, redirect)
   sslType: text("ssl_type", { enum: ["none", "letsencrypt", "custom"] })
     .notNull()
     .default("none"),
@@ -46,9 +52,12 @@ export const proxyHosts = sqliteTable("proxy_hosts", {
     .default(false),
   sslCertPath: text("ssl_cert_path"),
   sslKeyPath: text("ssl_key_path"),
+
+  // Proxy fields
   upstreams: text("upstreams", { mode: "json" })
     .$type<Array<{ server: string; port: number; weight: number }>>()
-    .notNull(),
+    .notNull()
+    .default([]),
   balanceMethod: text("balance_method", {
     enum: ["round_robin", "weighted", "least_conn", "ip_hash", "random"],
   })
@@ -69,9 +78,25 @@ export const proxyHosts = sqliteTable("proxy_hosts", {
     .default([]),
   hsts: integer("hsts", { mode: "boolean" }).notNull().default(true),
   http2: integer("http2", { mode: "boolean" }).notNull().default(true),
+
+  // Static fields
+  staticDir: text("static_dir"),
+  cacheExpires: text("cache_expires"),
+
+  // Redirect fields
+  forwardScheme: text("forward_scheme"),
+  forwardDomain: text("forward_domain"),
+  forwardPath: text("forward_path").default("/"),
+  preservePath: integer("preserve_path", { mode: "boolean" }).notNull().default(true),
+  statusCode: integer("status_code").default(301),
+
+  // Stream fields
+  incomingPort: integer("incoming_port"),
+  protocol: text("protocol", { enum: ["tcp", "udp"] }),
+
+  // Common
   webhookUrl: text("webhook_url"),
   advancedYaml: text("advanced_yaml"),
-  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
   createdAt: integer("created_at", { mode: "timestamp_ms" })
     .notNull()
     .$defaultFn(() => new Date()),
@@ -80,50 +105,25 @@ export const proxyHosts = sqliteTable("proxy_hosts", {
     .$defaultFn(() => new Date()),
 });
 
-// ─── Redirections ────────────────────────────────────────
-export const redirections = sqliteTable("redirections", {
+// ─── Host Labels ────────────────────────────────────────
+export const hostLabels = sqliteTable("host_labels", {
   id: integer("id").primaryKey({ autoIncrement: true }),
-  groupId: integer("group_id").references(() => hostGroups.id, { onDelete: "set null" }),
-  domains: text("domains", { mode: "json" })
-    .$type<string[]>()
-    .notNull(),
-  forwardScheme: text("forward_scheme").notNull().default("https"),
-  forwardDomain: text("forward_domain").notNull(),
-  forwardPath: text("forward_path").notNull().default("/"),
-  preservePath: integer("preserve_path", { mode: "boolean" })
-    .notNull()
-    .default(true),
-  statusCode: integer("status_code").notNull().default(301),
-  sslType: text("ssl_type", { enum: ["none", "letsencrypt", "custom"] })
-    .notNull()
-    .default("none"),
-  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  name: text("name").notNull(),
+  color: text("color").notNull(),
   createdAt: integer("created_at", { mode: "timestamp_ms" })
     .notNull()
     .$defaultFn(() => new Date()),
 });
 
-// ─── Streams (TCP/UDP) ──────────────────────────────────
-export const streams = sqliteTable("streams", {
+// ─── Host Label Assignments ─────────────────────────────
+export const hostLabelAssignments = sqliteTable("host_label_assignments", {
   id: integer("id").primaryKey({ autoIncrement: true }),
-  groupId: integer("group_id").references(() => hostGroups.id, { onDelete: "set null" }),
-  incomingPort: integer("incoming_port").notNull(),
-  protocol: text("protocol", { enum: ["tcp", "udp"] })
+  hostId: integer("host_id")
     .notNull()
-    .default("tcp"),
-  upstreams: text("upstreams", { mode: "json" })
-    .$type<Array<{ server: string; port: number; weight: number }>>()
-    .notNull(),
-  balanceMethod: text("balance_method", {
-    enum: ["round_robin", "weighted", "least_conn", "ip_hash", "random"],
-  })
+    .references(() => hosts.id, { onDelete: "cascade" }),
+  labelId: integer("label_id")
     .notNull()
-    .default("round_robin"),
-  webhookUrl: text("webhook_url"),
-  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
-  createdAt: integer("created_at", { mode: "timestamp_ms" })
-    .notNull()
-    .$defaultFn(() => new Date()),
+    .references(() => hostLabels.id, { onDelete: "cascade" }),
 });
 
 // ─── Access Lists ────────────────────────────────────────
@@ -164,7 +164,7 @@ export const healthChecks = sqliteTable(
   {
     id: integer("id").primaryKey({ autoIncrement: true }),
     hostId: integer("host_id"),
-    hostType: text("host_type", { enum: ["proxy", "stream"] })
+    hostType: text("host_type", { enum: ["proxy", "stream", "static", "redirect"] })
       .notNull()
       .default("proxy"),
     upstream: text("upstream").notNull(),
