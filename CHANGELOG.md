@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.3] - 2026-02-13
+
+### Added
+- GitHub Actions workflow for automatic Docker Hub release on tag push
+- `.dockerignore` to reduce Docker build context
+
+### Changed
+- Default page now shows generic "No site configured" message without product branding
+
 ## [1.0.2] - 2026-02-13
 
 ### Added
