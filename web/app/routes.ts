@@ -18,7 +18,6 @@ export default [
       route("error-pages", "./routes/admin/error-pages.tsx"),
       route("default-page", "./routes/admin/default-page.tsx"),
       route("logs", "./routes/admin/logs.tsx"),
-      route("health", "./routes/admin/health.tsx"),
       route("audit-log", "./routes/admin/audit-log.tsx"),
       route("users", "./routes/admin/users.tsx"),
       route("settings", "./routes/admin/settings.tsx"),

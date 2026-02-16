@@ -43,3 +43,4 @@ Thumbs.db
 CLAUDE.md
 docs/plans
 .worktrees/
+proxy/.cargo/

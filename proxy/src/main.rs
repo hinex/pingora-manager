@@ -15,6 +15,8 @@ use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_proxy::{http_proxy_service, ProxyHttp, Session};
 use router::Router;
 use ssl::SslCertManager;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -36,6 +38,8 @@ struct SharedState {
     error_pages_dir: Arc<str>,
     /// Cached default_page path (Arc<str>)
     default_page: Arc<str>,
+    /// Cached logs_dir (Arc<str>)
+    logs_dir: Arc<str>,
 }
 
 impl SharedState {
@@ -62,6 +66,7 @@ impl SharedState {
         let admin_upstream: Arc<str> = config.global.admin_upstream.as_str().into();
         let error_pages_dir: Arc<str> = config.global.error_pages_dir.as_str().into();
         let default_page: Arc<str> = config.global.default_page.as_str().into();
+        let logs_dir: Arc<str> = config.global.logs_dir.as_str().into();
 
         SharedState {
             config,
@@ -71,6 +76,7 @@ impl SharedState {
             admin_upstream,
             error_pages_dir,
             default_page,
+            logs_dir,
         }
     }
 }
@@ -99,6 +105,16 @@ enum RequestAction {
     ServeStatic {
         static_dir: String,
         location_path: String,
+        cache_expires: Option<String>,
+        host_id: Option<u64>,
+        group_id: Option<u64>,
+        error_pages_dir: Arc<str>,
+        /// Custom headers from the matched location
+        custom_headers: Vec<(String, String)>,
+    },
+    /// Serve a single file (file-type location)
+    ServeFile {
+        file_path: String,
         cache_expires: Option<String>,
         host_id: Option<u64>,
         group_id: Option<u64>,
@@ -149,10 +165,12 @@ pub struct ProxyCtx {
     custom_headers: Vec<(String, String)>,
     /// Cached error_pages_dir for fail_to_proxy
     error_pages_dir: Arc<str>,
+    /// Logs directory for per-host file logging
+    logs_dir: Arc<str>,
 }
 
 impl ProxyCtx {
-    fn new(error_pages_dir: Arc<str>) -> Self {
+    fn new(error_pages_dir: Arc<str>, logs_dir: Arc<str>) -> Self {
         ProxyCtx {
             upstream_addr: None,
             upstream_tls: false,
@@ -162,6 +180,7 @@ impl ProxyCtx {
             hsts: false,
             custom_headers: Vec::new(),
             error_pages_dir,
+            logs_dir,
         }
     }
 }
@@ -295,6 +314,18 @@ impl ProxyApp {
                         };
                     }
                 }
+                "file" => {
+                    if let Some(ref file_path) = loc.static_dir {
+                        return RequestAction::ServeFile {
+                            file_path: file_path.clone(),
+                            cache_expires: loc.cache_expires.clone(),
+                            host_id,
+                            group_id,
+                            error_pages_dir: Arc::clone(&state.error_pages_dir),
+                            custom_headers,
+                        };
+                    }
+                }
                 _ => {
                     // Proxy type — determine upstream from location-level LB
                     let key = client_ip.map(|ip| ip.to_string()).unwrap_or_default();
@@ -346,7 +377,7 @@ impl ProxyHttp for ProxyApp {
 
     fn new_ctx(&self) -> Self::CTX {
         let state = self.state.load();
-        ProxyCtx::new(Arc::clone(&state.error_pages_dir))
+        ProxyCtx::new(Arc::clone(&state.error_pages_dir), Arc::clone(&state.logs_dir))
     }
 
     /// Handle the incoming request: access control, redirects, static files
@@ -452,6 +483,51 @@ impl ProxyHttp for ProxyApp {
                     ims_owned.as_deref(),
                 ) {
                     // Add custom headers from location
+                    for (key, value) in &custom_headers {
+                        if let Ok(name) = http::header::HeaderName::from_bytes(key.as_bytes()) {
+                            let _ = file_resp.header.insert_header(name, value.as_str());
+                        }
+                    }
+                    session
+                        .write_response_header(Box::new(file_resp.header), false)
+                        .await?;
+                    if !file_resp.body.is_empty() {
+                        session
+                            .write_response_body(Some(file_resp.body), true)
+                            .await?;
+                    } else {
+                        session.write_response_body(None, true).await?;
+                    }
+                } else {
+                    let err_resp = error_pages::serve_error_page(
+                        &error_pages_dir,
+                        404,
+                        host_id,
+                        group_id,
+                    );
+                    session
+                        .write_response_header(Box::new(err_resp.header), false)
+                        .await?;
+                    session
+                        .write_response_body(Some(err_resp.body), true)
+                        .await?;
+                }
+                Ok(true)
+            }
+
+            RequestAction::ServeFile {
+                file_path,
+                cache_expires,
+                host_id,
+                group_id,
+                error_pages_dir,
+                custom_headers,
+            } => {
+                if let Some(mut file_resp) = static_files::serve_single_file(
+                    &file_path,
+                    cache_expires.as_deref(),
+                    ims_owned.as_deref(),
+                ) {
                     for (key, value) in &custom_headers {
                         if let Ok(name) = http::header::HeaderName::from_bytes(key.as_bytes()) {
                             let _ = file_resp.header.insert_header(name, value.as_str());
@@ -727,7 +803,7 @@ impl ProxyHttp for ProxyApp {
         &self,
         session: &mut Session,
         e: Option<&pingora_core::Error>,
-        _ctx: &mut Self::CTX,
+        ctx: &mut Self::CTX,
     ) {
         let status = session
             .response_written()
@@ -742,17 +818,30 @@ impl ProxyHttp for ProxyApp {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("-");
 
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
+
         if let Some(err) = e {
-            log::error!(
-                "{} {} {} {} - error: {}",
-                method,
-                host,
-                path,
-                status,
-                err
-            );
+            log::error!("{} {} {} {} - error: {}", method, host, path, status, err);
+
+            let log_file = match ctx.host_id {
+                Some(id) => format!("{}/proxy-host-{}_error.log", ctx.logs_dir, id),
+                None => format!("{}/proxy_general.log", ctx.logs_dir),
+            };
+            let line = format!("{} {} {} {} {} - error: {}\n", now, method, host, path, status, err);
+            if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&log_file) {
+                let _ = f.write_all(line.as_bytes());
+            }
         } else {
             log::info!("{} {} {} {}", method, host, path, status);
+
+            let log_file = match ctx.host_id {
+                Some(id) => format!("{}/proxy-host-{}_access.log", ctx.logs_dir, id),
+                None => format!("{}/proxy_general.log", ctx.logs_dir),
+            };
+            let line = format!("{} {} {} {} {}\n", now, method, host, path, status);
+            if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&log_file) {
+                let _ = f.write_all(line.as_bytes());
+            }
         }
     }
 }
@@ -1570,5 +1659,53 @@ mod tests {
         };
         let state = SharedState::build(config);
         assert!(state.location_lbs.contains_key(&(1, 0)));
+    }
+
+    // ─── File location routing ─────────────────────────────
+
+    fn host_with_file_location(id: u64, domains: &[&str]) -> HostConfig {
+        HostConfig {
+            id,
+            domains: domains.iter().map(|s| s.to_string()).collect(),
+            group_id: Some(10),
+            ssl: None,
+            locations: vec![LocationConfig {
+                path: "/sitemap.xml".to_string(),
+                match_type: "exact".to_string(),
+                location_type: Some("file".to_string()),
+                upstreams: vec![],
+                balance_method: "round_robin".to_string(),
+                static_dir: Some("/var/www/sitemap.xml".to_string()),
+                cache_expires: Some("1h".to_string()),
+                forward_scheme: None,
+                forward_domain: None,
+                forward_path: None,
+                preserve_path: false,
+                status_code: None,
+                headers: HashMap::new(),
+                access_list_id: None,
+            }],
+            stream_ports: vec![],
+            hsts: false,
+            http2: false,
+            enabled: true,
+        }
+    }
+
+    #[test]
+    fn test_file_location_matched() {
+        let app = build_app(
+            vec![host_with_file_location(1, &["files.com"])],
+            HashMap::new(),
+        );
+        let ip: IpAddr = "10.0.0.1".parse().unwrap();
+        let action = app.resolve_request(Some("files.com"), "/sitemap.xml", Some(80), Some(ip), None);
+        match action {
+            RequestAction::ServeFile { file_path, cache_expires, .. } => {
+                assert_eq!(file_path, "/var/www/sitemap.xml");
+                assert_eq!(cache_expires.unwrap(), "1h");
+            }
+            _ => panic!("expected ServeFile"),
+        }
     }
 }

@@ -89,6 +89,9 @@ export async function action({ request, params }: Route.ActionArgs) {
     if (loc.type === "redirect") {
       if (!loc.forwardDomain?.trim()) return { error: `Redirect location "${loc.path}" needs a forward domain` };
     }
+    if (loc.type === "file") {
+      if (!loc.staticDir?.trim()) return { error: `File location "${loc.path}" needs a file path` };
+    }
   }
 
   for (const sp of data.streamPorts) {

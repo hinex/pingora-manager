@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.0] - 2026-02-16
+
+### Added
+- **File location type** — serve a single file at a specific path (e.g., `/sitemap.xml` → `/var/static/sitemap.xml`)
+- **Per-host file logging** — proxy writes access and error logs to separate files per host (`proxy-host-{id}_access.log`, `proxy-host-{id}_error.log`)
+- **Dashboard health overview** — upstream health status (up/down counts) and unhealthy upstreams table directly on the dashboard
+
+### Changed
+- **Dashboard redesign** — new layout with host stats, health summary, unhealthy upstreams table, and recent audit activity
+- **Health page merged into Dashboard** — removed standalone Health page, all health data now on the Dashboard
+
+### Removed
+- Standalone Health page (`/admin/health`) — replaced by Dashboard health section
+- "Powered by" footer from error pages
+
 ## [1.2.1] - 2026-02-16
 
 ### Fixed

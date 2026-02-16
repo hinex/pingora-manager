@@ -132,6 +132,8 @@ export function LocationsTab({ locations, setLocations, accessLists = [] }: Loca
       }
       case "static":
         return loc.staticDir ? `Static: ${loc.staticDir}` : "No directory set";
+      case "file":
+        return loc.staticDir ? `File: ${loc.staticDir}` : "No file path set";
       case "redirect":
         return loc.forwardDomain
           ? `\u2192 ${loc.forwardScheme}://${loc.forwardDomain}${loc.forwardPath}`
@@ -227,6 +229,7 @@ export function LocationsTab({ locations, setLocations, accessLists = [] }: Loca
                       >
                         <option value="proxy">Proxy</option>
                         <option value="static">Static</option>
+                        <option value="file">File</option>
                         <option value="redirect">Redirect</option>
                       </select>
                     </div>
@@ -340,6 +343,30 @@ export function LocationsTab({ locations, setLocations, accessLists = [] }: Loca
                           value={location.staticDir}
                           onChange={(e) => updateLocation(locIndex, { staticDir: e.target.value })}
                           placeholder="/var/www/html"
+                        />
+                      </div>
+                      <div>
+                        <Label className="text-xs mb-1">Cache Expires</Label>
+                        <Input
+                          type="text"
+                          value={location.cacheExpires}
+                          onChange={(e) => updateLocation(locIndex, { cacheExpires: e.target.value })}
+                          placeholder="30d, 1h, 3600s"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Type-specific section: File */}
+                  {location.type === "file" && (
+                    <div className="space-y-3">
+                      <div>
+                        <Label className="text-xs mb-1">File Path</Label>
+                        <Input
+                          type="text"
+                          value={location.staticDir}
+                          onChange={(e) => updateLocation(locIndex, { staticDir: e.target.value })}
+                          placeholder="/var/www/sitemap.xml"
                         />
                       </div>
                       <div>

@@ -12,7 +12,6 @@ pub struct GlobalConfig {
     #[serde(default = "error_pages_dir")]
     pub error_pages_dir: String,
     #[serde(default = "logs_dir")]
-    #[allow(dead_code)] // deserialized for schema completeness
     pub logs_dir: String,
     #[serde(default = "ssl_dir")]
     pub ssl_dir: String,

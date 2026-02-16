@@ -19,7 +19,7 @@ import { LABEL_COLORS, type LabelItem } from "~/components/LabelsModal";
 export interface LocationFormData {
   path: string;
   matchType: "prefix" | "exact" | "regex";
-  type: "proxy" | "static" | "redirect";
+  type: "proxy" | "static" | "redirect" | "file";
   upstreams: Array<{ server: string; port: number; weight: number }>;
   balanceMethod: string;
   staticDir: string;
@@ -227,6 +227,12 @@ export function HostForm({
       if (loc.type === "redirect" && !loc.forwardDomain?.trim()) {
         e.preventDefault();
         toast.error(`Redirect location "${loc.path}" needs a forward domain`);
+        setActiveTab("locations");
+        return;
+      }
+      if (loc.type === "file" && !loc.staticDir?.trim()) {
+        e.preventDefault();
+        toast.error(`File location "${loc.path}" needs a file path`);
         setActiveTab("locations");
         return;
       }

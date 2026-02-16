@@ -705,6 +705,7 @@ function getHostTypeBadge(host: HostRecord) {
     const type = [...locationTypes][0];
     if (type === "proxy") return <Badge>Proxy</Badge>;
     if (type === "static") return <Badge variant="secondary">Static</Badge>;
+    if (type === "file") return <Badge variant="secondary">File</Badge>;
     if (type === "redirect") return <Badge variant="outline">Redirect</Badge>;
   }
   return <Badge variant="outline">Mixed</Badge>;
@@ -721,6 +722,7 @@ function getHostInfo(host: HostRecord) {
       return `\u2192 ${u.server}:${u.port}`;
     }
     if (loc.type === "static") return `Static: ${loc.staticDir || "-"}`;
+    if (loc.type === "file") return `File: ${loc.staticDir || "-"}`;
     if (loc.type === "redirect") return `\u2192 ${loc.forwardScheme}://${loc.forwardDomain}${loc.forwardPath}`;
   }
 

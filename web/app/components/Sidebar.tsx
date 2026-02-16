@@ -7,7 +7,6 @@ import {
   AlertTriangle,
   FileText,
   Terminal,
-  HeartPulse,
   ScrollText,
   Users,
   Settings,
@@ -70,7 +69,6 @@ const navSections: NavSection[] = [
     title: "Monitoring",
     items: [
       { to: "/admin/logs", label: "Logs", icon: Terminal },
-      { to: "/admin/health", label: "Health", icon: HeartPulse },
       { to: "/admin/audit-log", label: "Audit Log", icon: ScrollText },
     ],
   },

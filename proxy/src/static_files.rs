@@ -207,6 +207,96 @@ fn parse_cache_duration(s: &str) -> u64 {
         .unwrap_or(0)
 }
 
+/// Serve a single file by absolute path (file-type location).
+///
+/// - Canonicalizes the path and checks it's a file
+/// - Determines MIME type from file extension
+/// - Sets Cache-Control based on `cache_expires`
+/// - Returns 304 Not Modified if `if_modified_since` matches
+/// - Returns None if the file does not exist
+pub fn serve_single_file(
+    file_path: &str,
+    cache_expires: Option<&str>,
+    if_modified_since: Option<&str>,
+) -> Option<StaticFileResponse> {
+    let canonical = Path::new(file_path).canonicalize().ok()?;
+
+    if !canonical.is_file() {
+        return None;
+    }
+
+    // Try to serve from cache
+    let now = Instant::now();
+    {
+        let cache = FILE_CACHE.read().unwrap();
+        if let Some(cached) = cache.get(&canonical) {
+            if now.duration_since(cached.cached_at).as_secs() < CACHE_TTL_SECS {
+                if let Some(ims) = if_modified_since {
+                    if ims == cached.last_modified {
+                        let mut resp = ResponseHeader::build(304, Some(2)).ok()?;
+                        resp.insert_header(http::header::LAST_MODIFIED, &cached.last_modified)
+                            .ok()?;
+                        return Some(StaticFileResponse {
+                            header: resp,
+                            body: Bytes::new(),
+                        });
+                    }
+                }
+
+                return Some(build_200_response(
+                    &cached.body,
+                    &cached.mime,
+                    &cached.last_modified,
+                    cache_expires,
+                )?);
+            }
+        }
+    }
+
+    // Cache miss or stale — read from disk
+    let metadata = std::fs::metadata(&canonical).ok()?;
+    let modified: DateTime<Utc> = metadata
+        .modified()
+        .unwrap_or(SystemTime::UNIX_EPOCH)
+        .into();
+    let last_modified_str = modified.format("%a, %d %b %Y %H:%M:%S GMT").to_string();
+
+    if let Some(ims) = if_modified_since {
+        if ims == last_modified_str {
+            let mut resp = ResponseHeader::build(304, Some(2)).ok()?;
+            resp.insert_header(http::header::LAST_MODIFIED, &last_modified_str)
+                .ok()?;
+            return Some(StaticFileResponse {
+                header: resp,
+                body: Bytes::new(),
+            });
+        }
+    }
+
+    let body_vec = std::fs::read(&canonical).ok()?;
+    let body = Bytes::from(body_vec);
+
+    let mime = mime_guess::from_path(&canonical)
+        .first_or_octet_stream()
+        .to_string();
+
+    // Update cache
+    {
+        let mut cache = FILE_CACHE.write().unwrap();
+        cache.insert(
+            canonical,
+            CachedFile {
+                body: body.clone(),
+                mime: mime.clone(),
+                last_modified: last_modified_str.clone(),
+                cached_at: now,
+            },
+        );
+    }
+
+    build_200_response(&body, &mime, &last_modified_str, cache_expires)
+}
+
 /// Serve the default page (e.g., /data/default-page/index.html)
 pub fn serve_default_page(default_page_path: &str) -> Option<StaticFileResponse> {
     let path = Path::new(default_page_path);
