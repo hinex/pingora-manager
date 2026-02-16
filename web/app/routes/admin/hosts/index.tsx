@@ -565,8 +565,8 @@ function HostRow({
     setAlertOpen(false);
   };
 
-  // Type badge
-  const typeBadge = getTypeBadge(host.type);
+  // Type badges derived from locations/stream ports
+  const typeBadges = getTypeBadges(host);
 
   // SSL display
   const sslLabel =
@@ -582,13 +582,15 @@ function HostRow({
         ? "secondary"
         : "outline";
 
-  // Type-specific info
-  const typeInfo = getTypeInfo(host);
+  // Info summary
+  const typeInfo = getHostInfo(host);
 
   return (
     <TableRow>
       {/* Type */}
-      <TableCell>{typeBadge}</TableCell>
+      <TableCell>
+        <div className="flex flex-wrap gap-1">{typeBadges}</div>
+      </TableCell>
 
       {/* Domains */}
       <TableCell>
@@ -698,46 +700,55 @@ function HostRow({
 
 // ─── Helpers ────────────────────────────────────────────────
 
-function getTypeBadge(type: string) {
-  switch (type) {
-    case "proxy":
-      return <Badge>Proxy</Badge>;
-    case "static":
-      return <Badge variant="secondary">Static</Badge>;
-    case "redirect":
-      return <Badge variant="outline">Redirect</Badge>;
-    case "stream":
-      return (
-        <Badge
-          variant="secondary"
-          className="bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200"
-        >
-          Stream
-        </Badge>
-      );
-    default:
-      return <Badge variant="outline">{type}</Badge>;
+function getTypeBadges(host: HostRecord) {
+  const locations = (host.locations ?? []) as Array<{ type: string }>;
+  const streamPorts = (host.streamPorts ?? []) as Array<{ port: number; protocol: string }>;
+
+  const types = new Set(locations.map((l) => l.type));
+  const badges: React.ReactNode[] = [];
+
+  if (types.has("proxy")) badges.push(<Badge key="proxy">Proxy</Badge>);
+  if (types.has("static")) badges.push(<Badge key="static" variant="secondary">Static</Badge>);
+  if (types.has("redirect")) badges.push(<Badge key="redirect" variant="outline">Redirect</Badge>);
+  if (streamPorts.length > 0) {
+    badges.push(
+      <Badge
+        key="stream"
+        variant="secondary"
+        className="bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200"
+      >
+        Stream
+      </Badge>
+    );
   }
+
+  if (badges.length === 0) {
+    return [<Badge key="none" variant="outline">-</Badge>];
+  }
+
+  return badges;
 }
 
-function getTypeInfo(host: HostRecord) {
-  switch (host.type) {
-    case "proxy": {
-      const upstreams = host.upstreams as Array<{ server: string; port: number; weight: number }>;
-      return `${upstreams.length} upstream${upstreams.length !== 1 ? "s" : ""}`;
-    }
-    case "static": {
-      const dir = host.staticDir ?? "";
-      return dir.length > 30 ? dir.slice(0, 27) + "..." : dir || "-";
-    }
-    case "redirect": {
-      const target = `${host.forwardScheme ?? "https"}://${host.forwardDomain ?? ""}${host.forwardPath ?? "/"}`;
-      return target.length > 40 ? target.slice(0, 37) + "..." : target;
-    }
-    case "stream": {
-      return `${host.incomingPort ?? "-"} ${(host.protocol ?? "tcp").toUpperCase()}`;
-    }
-    default:
-      return "-";
+function getHostInfo(host: HostRecord) {
+  const locations = (host.locations ?? []) as Array<{
+    type: string;
+    path: string;
+    upstreams?: Array<{ server: string; port: number; weight: number }>;
+  }>;
+  const streamPorts = (host.streamPorts ?? []) as Array<{ port: number; protocol: string }>;
+
+  const parts: string[] = [];
+
+  if (locations.length > 0) {
+    parts.push(`${locations.length} location${locations.length !== 1 ? "s" : ""}`);
   }
+
+  if (streamPorts.length > 0) {
+    const portList = streamPorts
+      .map((sp) => `${sp.port} ${(sp.protocol ?? "tcp").toUpperCase()}`)
+      .join(", ");
+    parts.push(portList);
+  }
+
+  return parts.join(" + ") || "-";
 }

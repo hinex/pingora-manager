@@ -60,6 +60,17 @@ function getLatestStatus(
   return (row?.status as "up" | "down") ?? null;
 }
 
+interface LocationData {
+  type: string;
+  upstreams: Array<{ server: string; port: number; weight: number }>;
+}
+
+interface StreamPortData {
+  port: number;
+  protocol: string;
+  upstreams: Array<{ server: string; port: number; weight: number }>;
+}
+
 async function runChecks() {
   try {
     const enabledHosts = db
@@ -68,120 +79,109 @@ async function runChecks() {
       .where(eq(hosts.enabled, true))
       .all();
 
-    const allProxyHosts = enabledHosts.filter(h => h.type === "proxy");
-    const allStreams = enabledHosts.filter(h => h.type === "stream");
-
-    // Check proxy host upstreams
-    for (const host of allProxyHosts) {
-      const upstreamsList = host.upstreams as Array<{
-        server: string;
-        port: number;
-        weight: number;
-      }>;
+    for (const host of enabledHosts) {
+      const locations = (host.locations ?? []) as LocationData[];
+      const streamPorts = (host.streamPorts ?? []) as StreamPortData[];
       const domains = host.domains as string[];
-      const hostLabel = domains[0] ?? `proxy:${host.id}`;
+      const hostLabel = domains[0] ?? `host:${host.id}`;
 
-      for (const upstream of upstreamsList) {
-        const upstreamKey = `${upstream.server}:${upstream.port}`;
-        const result = await checkUpstream(upstream.server, upstream.port);
-        const prevStatus = getLatestStatus(host.id, "proxy", upstreamKey);
+      // Check proxy location upstreams
+      for (const location of locations) {
+        if (location.type !== "proxy" || !location.upstreams) continue;
 
-        // Insert health check record
-        db.insert(healthChecks)
-          .values({
-            hostId: host.id,
-            hostType: "proxy",
-            upstream: upstreamKey,
-            status: result.status,
-            responseMs: result.status === "up" ? result.responseMs : null,
-            checkedAt: new Date(),
-          })
-          .run();
+        for (const upstream of location.upstreams) {
+          const upstreamKey = `${upstream.server}:${upstream.port}`;
+          const result = await checkUpstream(upstream.server, upstream.port);
+          const prevStatus = getLatestStatus(host.id, "proxy", upstreamKey);
 
-        // Send webhook if status changed
-        if (prevStatus !== null && prevStatus !== result.status) {
-          const webhookUrl = resolveWebhookUrl(host.webhookUrl, host.groupId);
-          if (webhookUrl) {
-            const group = host.groupId
-              ? db
-                  .select()
-                  .from(hostGroups)
-                  .where(eq(hostGroups.id, host.groupId))
-                  .get()
-              : null;
-
-            const payload: WebhookPayload = {
-              event: result.status === "down" ? "upstream_down" : "upstream_up",
-              host: hostLabel,
+          db.insert(healthChecks)
+            .values({
+              hostId: host.id,
+              hostType: "proxy",
               upstream: upstreamKey,
-              group: group?.name ?? null,
-              timestamp: new Date().toISOString(),
-              response_ms: result.status === "up" ? result.responseMs : null,
-              message:
-                result.status === "down"
-                  ? result.error ?? "Connection failed"
-                  : "Upstream recovered",
-            };
+              status: result.status,
+              responseMs: result.status === "up" ? result.responseMs : null,
+              checkedAt: new Date(),
+            })
+            .run();
 
-            await sendWebhook(webhookUrl, payload);
+          if (prevStatus !== null && prevStatus !== result.status) {
+            const webhookUrl = resolveWebhookUrl(host.webhookUrl, host.groupId);
+            if (webhookUrl) {
+              const group = host.groupId
+                ? db
+                    .select()
+                    .from(hostGroups)
+                    .where(eq(hostGroups.id, host.groupId))
+                    .get()
+                : null;
+
+              const payload: WebhookPayload = {
+                event: result.status === "down" ? "upstream_down" : "upstream_up",
+                host: hostLabel,
+                upstream: upstreamKey,
+                group: group?.name ?? null,
+                timestamp: new Date().toISOString(),
+                response_ms: result.status === "up" ? result.responseMs : null,
+                message:
+                  result.status === "down"
+                    ? result.error ?? "Connection failed"
+                    : "Upstream recovered",
+              };
+
+              await sendWebhook(webhookUrl, payload);
+            }
           }
         }
       }
-    }
 
-    // Check stream upstreams
-    for (const stream of allStreams) {
-      const upstreamsList = stream.upstreams as Array<{
-        server: string;
-        port: number;
-        weight: number;
-      }>;
-      const streamLabel = `stream:${stream.incomingPort}`;
+      // Check stream port upstreams
+      for (const sp of streamPorts) {
+        if (!sp.upstreams) continue;
+        const streamLabel = `stream:${sp.port}`;
 
-      for (const upstream of upstreamsList) {
-        const upstreamKey = `${upstream.server}:${upstream.port}`;
-        const result = await checkUpstream(upstream.server, upstream.port);
-        const prevStatus = getLatestStatus(stream.id, "stream", upstreamKey);
+        for (const upstream of sp.upstreams) {
+          const upstreamKey = `${upstream.server}:${upstream.port}`;
+          const result = await checkUpstream(upstream.server, upstream.port);
+          const prevStatus = getLatestStatus(host.id, "stream", upstreamKey);
 
-        db.insert(healthChecks)
-          .values({
-            hostId: stream.id,
-            hostType: "stream",
-            upstream: upstreamKey,
-            status: result.status,
-            responseMs: result.status === "up" ? result.responseMs : null,
-            checkedAt: new Date(),
-          })
-          .run();
-
-        if (prevStatus !== null && prevStatus !== result.status) {
-          const webhookUrl = resolveWebhookUrl(
-            stream.webhookUrl,
-            stream.groupId
-          );
-          if (webhookUrl) {
-            const group = stream.groupId
-              ? db
-                  .select()
-                  .from(hostGroups)
-                  .where(eq(hostGroups.id, stream.groupId))
-                  .get()
-              : null;
-
-            const payload: WebhookPayload = {
-              event: result.status === "down" ? "upstream_down" : "upstream_up",
-              host: streamLabel,
+          db.insert(healthChecks)
+            .values({
+              hostId: host.id,
+              hostType: "stream",
               upstream: upstreamKey,
-              group: group?.name ?? null,
-              timestamp: new Date().toISOString(),
-              response_ms: result.status === "up" ? result.responseMs : null,
-              message:
-                result.status === "down"
-                  ? result.error ?? "Connection failed"
-                  : "Upstream recovered",
-            };
+              status: result.status,
+              responseMs: result.status === "up" ? result.responseMs : null,
+              checkedAt: new Date(),
+            })
+            .run();
 
-            await sendWebhook(webhookUrl, payload);
+          if (prevStatus !== null && prevStatus !== result.status) {
+            const webhookUrl = resolveWebhookUrl(host.webhookUrl, host.groupId);
+            if (webhookUrl) {
+              const group = host.groupId
+                ? db
+                    .select()
+                    .from(hostGroups)
+                    .where(eq(hostGroups.id, host.groupId))
+                    .get()
+                : null;
+
+              const payload: WebhookPayload = {
+                event: result.status === "down" ? "upstream_down" : "upstream_up",
+                host: streamLabel,
+                upstream: upstreamKey,
+                group: group?.name ?? null,
+                timestamp: new Date().toISOString(),
+                response_ms: result.status === "up" ? result.responseMs : null,
+                message:
+                  result.status === "down"
+                    ? result.error ?? "Connection failed"
+                    : "Upstream recovered",
+              };
+
+              await sendWebhook(webhookUrl, payload);
+            }
           }
         }
       }

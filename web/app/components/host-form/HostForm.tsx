@@ -1,7 +1,6 @@
 import { useState, useEffect } from "react";
 import { Form, useActionData } from "react-router";
 import { toast } from "sonner";
-import { UpstreamsTab } from "./UpstreamsTab";
 import { LocationsTab } from "./LocationsTab";
 import { SslTab } from "./SslTab";
 import { AdvancedTab } from "./AdvancedTab";
@@ -12,112 +11,98 @@ import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { Badge } from "~/components/ui/badge";
 import { Switch } from "~/components/ui/switch";
-import { Checkbox } from "~/components/ui/checkbox";
 import { cn } from "~/lib/utils";
-import { X, Globe, HardDrive, ArrowRightLeft, Radio } from "lucide-react";
+import { X, Plus } from "lucide-react";
 import { LABEL_COLORS, type LabelItem } from "~/components/LabelsModal";
 
+export interface LocationFormData {
+  path: string;
+  matchType: "prefix" | "exact" | "regex";
+  type: "proxy" | "static" | "redirect";
+  upstreams: Array<{ server: string; port: number; weight: number }>;
+  balanceMethod: string;
+  staticDir: string;
+  cacheExpires: string;
+  forwardScheme: string;
+  forwardDomain: string;
+  forwardPath: string;
+  preservePath: boolean;
+  statusCode: number;
+  headers: Record<string, string>;
+  accessListId: number | null;
+}
+
+export interface StreamPortFormData {
+  port: number | null;
+  protocol: "tcp" | "udp";
+  upstreams: Array<{ server: string; port: number; weight: number }>;
+  balanceMethod: string;
+}
+
 export interface HostFormData {
-  type: "proxy" | "static" | "redirect" | "stream";
   domains: string[];
   groupId: number | null;
   enabled: boolean;
   labelIds: number[];
-
-  // SSL
   sslType: string;
   sslCertPath: string;
   sslKeyPath: string;
   sslForceHttps: boolean;
   hsts: boolean;
   http2: boolean;
-
-  // Proxy fields
-  upstreams: Array<{ server: string; port: number; weight: number }>;
-  balanceMethod: string;
-  locations: Array<{
-    path: string;
-    matchType: string;
-    type: string;
-    upstreams?: Array<{ server: string; port: number; weight: number }>;
-    staticDir?: string;
-    cacheExpires?: string;
-    accessListId?: number;
-    headers?: Record<string, string>;
-  }>;
-
-  // Static fields
-  staticDir: string;
-  cacheExpires: string;
-
-  // Redirect fields
-  forwardScheme: string;
-  forwardDomain: string;
-  forwardPath: string;
-  preservePath: boolean;
-  statusCode: number;
-
-  // Stream fields
-  incomingPort: number | null;
-  protocol: string;
-
-  // Common
+  locations: LocationFormData[];
+  streamPorts: StreamPortFormData[];
   webhookUrl: string;
   advancedYaml: string;
 }
 
-interface HostFormProps {
-  initialData?: Partial<HostFormData>;
-  groups: Array<{ id: number; name: string }>;
-  labels: LabelItem[];
-  submitLabel: string;
-}
+export const defaultLocation: LocationFormData = {
+  path: "/",
+  matchType: "prefix",
+  type: "proxy",
+  upstreams: [],
+  balanceMethod: "round_robin",
+  staticDir: "",
+  cacheExpires: "",
+  forwardScheme: "https",
+  forwardDomain: "",
+  forwardPath: "/",
+  preservePath: true,
+  statusCode: 301,
+  headers: {},
+  accessListId: null,
+};
 
 const defaultFormData: HostFormData = {
-  type: "proxy",
   domains: [],
   groupId: null,
   enabled: true,
   labelIds: [],
-
   sslType: "none",
   sslCertPath: "",
   sslKeyPath: "",
   sslForceHttps: false,
   hsts: true,
   http2: true,
-
-  upstreams: [],
-  balanceMethod: "round_robin",
-  locations: [],
-
-  staticDir: "",
-  cacheExpires: "",
-
-  forwardScheme: "https",
-  forwardDomain: "",
-  forwardPath: "/",
-  preservePath: true,
-  statusCode: 301,
-
-  incomingPort: null,
-  protocol: "tcp",
-
+  locations: [{ ...defaultLocation }],
+  streamPorts: [],
   webhookUrl: "",
   advancedYaml: "",
 };
 
-const HOST_TYPES = [
-  { value: "proxy" as const, label: "Proxy", icon: Globe },
-  { value: "static" as const, label: "Static", icon: HardDrive },
-  { value: "redirect" as const, label: "Redirect", icon: ArrowRightLeft },
-  { value: "stream" as const, label: "Stream", icon: Radio },
-];
+interface HostFormProps {
+  initialData?: Partial<HostFormData>;
+  groups: Array<{ id: number; name: string }>;
+  labels: LabelItem[];
+  accessLists: Array<{ id: number; name: string }>;
+  submitLabel: string;
+}
 
 export function HostForm({
   initialData,
   groups,
   labels,
+  accessLists,
   submitLabel,
 }: HostFormProps) {
   const actionData = useActionData<{ error?: string }>();
@@ -141,11 +126,15 @@ export function HostForm({
   const handleAddDomain = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
       e.preventDefault();
-      const value = domainInput.trim();
-      if (value && !formData.domains.includes(value)) {
-        update({ domains: [...formData.domains, value] });
-        setDomainInput("");
-      }
+      addDomainFromInput();
+    }
+  };
+
+  const addDomainFromInput = () => {
+    const value = domainInput.trim();
+    if (value && !formData.domains.includes(value)) {
+      update({ domains: [...formData.domains, value] });
+      setDomainInput("");
     }
   };
 
@@ -161,71 +150,61 @@ export function HostForm({
     });
   };
 
-  const showSsl = formData.type !== "stream";
-  const showUpstreams = formData.type === "proxy" || formData.type === "stream";
-  const showLocations = formData.type === "proxy";
+  const showSsl = formData.domains.length > 0 || formData.sslType !== "none";
 
   const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
-    // Domains required for all types except stream
-    if (formData.type !== "stream" && formData.domains.length === 0) {
+    // At least one location or stream port required
+    if (formData.locations.length === 0 && formData.streamPorts.length === 0) {
       e.preventDefault();
-      toast.error("Please add at least one domain");
+      toast.error("At least one location or stream port is required");
+      setActiveTab("locations");
+      return;
+    }
+
+    // Domains required if there are HTTP locations
+    if (formData.locations.length > 0 && formData.domains.length === 0) {
+      e.preventDefault();
+      toast.error("At least one domain is required when locations are configured");
       setActiveTab("general");
       return;
     }
 
-    // Type-specific validation
-    if (formData.type === "proxy") {
-      if (formData.upstreams.length === 0) {
-        const hasProxyLocations = formData.locations.some((loc) => loc.type === "proxy");
-        if (hasProxyLocations) {
-          const allHaveUpstreams = formData.locations
-            .filter((loc) => loc.type === "proxy")
-            .every((loc) => loc.upstreams && loc.upstreams.length > 0);
-          if (!allHaveUpstreams) {
-            e.preventDefault();
-            toast.error("Please configure at least one default upstream, or ensure all proxy locations have upstreams");
-            setActiveTab("upstreams");
-            return;
-          }
-        } else if (formData.locations.length === 0) {
-          e.preventDefault();
-          toast.error("Please configure at least one upstream");
-          setActiveTab("upstreams");
-          return;
-        }
-      }
-    }
-
-    if (formData.type === "static") {
-      if (!formData.staticDir?.trim()) {
+    // Per-location validation
+    for (let i = 0; i < formData.locations.length; i++) {
+      const loc = formData.locations[i];
+      if (loc.type === "proxy" && loc.upstreams.length === 0) {
         e.preventDefault();
-        toast.error("Static directory path is required");
-        setActiveTab("general");
+        toast.error(`Location "${loc.path}": at least one upstream is required for proxy type`);
+        setActiveTab("locations");
+        return;
+      }
+      if (loc.type === "static" && !loc.staticDir?.trim()) {
+        e.preventDefault();
+        toast.error(`Location "${loc.path}": static directory path is required`);
+        setActiveTab("locations");
+        return;
+      }
+      if (loc.type === "redirect" && !loc.forwardDomain?.trim()) {
+        e.preventDefault();
+        toast.error(`Location "${loc.path}": forward domain is required for redirect type`);
+        setActiveTab("locations");
         return;
       }
     }
 
-    if (formData.type === "redirect") {
-      if (!formData.forwardDomain?.trim()) {
+    // Per-stream-port validation
+    for (let i = 0; i < formData.streamPorts.length; i++) {
+      const sp = formData.streamPorts[i];
+      if (!sp.port || sp.port < 1 || sp.port > 65535) {
         e.preventDefault();
-        toast.error("Forward domain is required");
-        setActiveTab("general");
+        toast.error(`Stream port ${i + 1}: port must be between 1 and 65535`);
+        setActiveTab("advanced");
         return;
       }
-    }
-
-    if (formData.type === "stream") {
-      if (!formData.incomingPort || formData.incomingPort < 1 || formData.incomingPort > 65535) {
+      if (sp.upstreams.length === 0) {
         e.preventDefault();
-        toast.error("Incoming port must be between 1 and 65535");
-        setActiveTab("general");
-        return;
-      }
-      if (formData.upstreams.length === 0) {
-        e.preventDefault();
-        toast.error("At least one upstream is required");
-        setActiveTab("upstreams");
+        toast.error(`Stream port ${sp.port}: at least one upstream is required`);
+        setActiveTab("advanced");
         return;
       }
     }
@@ -240,12 +219,11 @@ export function HostForm({
     }
   };
 
-  // Build available tabs based on type
+  // Build available tabs
   const tabs: Array<{ value: string; label: string }> = [
     { value: "general", label: "General" },
+    { value: "locations", label: "Locations" },
   ];
-  if (showUpstreams) tabs.push({ value: "upstreams", label: "Upstreams" });
-  if (showLocations) tabs.push({ value: "locations", label: "Locations" });
   if (showSsl) tabs.push({ value: "ssl", label: "SSL" });
   tabs.push({ value: "advanced", label: "Advanced" });
 
@@ -254,34 +232,11 @@ export function HostForm({
     if (!tabs.find((t) => t.value === activeTab)) {
       setActiveTab("general");
     }
-  }, [formData.type]);
+  }, [formData.domains.length, formData.sslType]);
 
   return (
     <Form method="post" onSubmit={handleSubmit}>
       <input type="hidden" name="formData" value={JSON.stringify(formData)} />
-
-      {/* Type Selector */}
-      <div className="flex gap-2 mb-6">
-        {HOST_TYPES.map((ht) => {
-          const Icon = ht.icon;
-          return (
-            <button
-              key={ht.value}
-              type="button"
-              onClick={() => update({ type: ht.value })}
-              className={cn(
-                "flex items-center gap-2 px-4 py-2 rounded-md border text-sm font-medium transition-colors",
-                formData.type === ht.value
-                  ? "border-primary bg-primary text-primary-foreground"
-                  : "border-input bg-background hover:bg-accent hover:text-accent-foreground"
-              )}
-            >
-              <Icon className="h-4 w-4" />
-              {ht.label}
-            </button>
-          );
-        })}
-      </div>
 
       <Card>
         <Tabs value={activeTab} onValueChange={setActiveTab}>
@@ -298,145 +253,39 @@ export function HostForm({
             {/* General Tab */}
             <TabsContent value="general" className="mt-0">
               <div className="space-y-4">
-                {/* Domains — not for stream */}
-                {formData.type !== "stream" && (
-                  <div>
-                    <Label className="mb-1">Domains</Label>
-                    <div className="flex flex-wrap gap-2 mb-2">
-                      {formData.domains.map((domain, index) => (
-                        <Badge key={index} variant="secondary" className="gap-1">
-                          {domain}
-                          <button type="button" onClick={() => removeDomain(index)}>
-                            <X className="h-3 w-3" />
-                          </button>
-                        </Badge>
-                      ))}
-                    </div>
+                {/* Domains */}
+                <div>
+                  <Label className="mb-1">Domains</Label>
+                  <div className="flex flex-wrap gap-2 mb-2">
+                    {formData.domains.map((domain, index) => (
+                      <Badge key={index} variant="secondary" className="gap-1">
+                        {domain}
+                        <button type="button" onClick={() => removeDomain(index)}>
+                          <X className="h-3 w-3" />
+                        </button>
+                      </Badge>
+                    ))}
+                  </div>
+                  <div className="flex gap-2">
                     <Input
                       type="text"
                       value={domainInput}
                       onChange={(e) => setDomainInput(e.target.value)}
                       onKeyDown={handleAddDomain}
-                      placeholder="Type domain and press Enter"
+                      placeholder="example.com"
+                      className="flex-1"
                     />
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Press Enter to add each domain
-                    </p>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      onClick={addDomainFromInput}
+                      disabled={!domainInput.trim()}
+                    >
+                      <Plus className="h-4 w-4" />
+                    </Button>
                   </div>
-                )}
-
-                {/* Stream: Incoming Port + Protocol */}
-                {formData.type === "stream" && (
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <Label className="mb-1">Incoming Port</Label>
-                      <Input
-                        type="number"
-                        value={formData.incomingPort ?? ""}
-                        onChange={(e) => update({ incomingPort: e.target.value ? Number(e.target.value) : null })}
-                        min={1}
-                        max={65535}
-                        placeholder="8080"
-                      />
-                    </div>
-                    <div>
-                      <Label className="mb-1">Protocol</Label>
-                      <select
-                        value={formData.protocol}
-                        onChange={(e) => update({ protocol: e.target.value })}
-                        className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                      >
-                        <option value="tcp">TCP</option>
-                        <option value="udp">UDP</option>
-                      </select>
-                    </div>
-                  </div>
-                )}
-
-                {/* Static: Directory + Cache */}
-                {formData.type === "static" && (
-                  <div className="space-y-3">
-                    <div>
-                      <Label className="mb-1">Static Directory Path</Label>
-                      <Input
-                        type="text"
-                        value={formData.staticDir}
-                        onChange={(e) => update({ staticDir: e.target.value })}
-                        placeholder="/var/www/html"
-                      />
-                    </div>
-                    <div>
-                      <Label className="mb-1">Cache Expires</Label>
-                      <Input
-                        type="text"
-                        value={formData.cacheExpires}
-                        onChange={(e) => update({ cacheExpires: e.target.value })}
-                        placeholder="30d, 1h, 3600s"
-                      />
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Duration format: 30d, 12h, 45m, 120s
-                      </p>
-                    </div>
-                  </div>
-                )}
-
-                {/* Redirect: Forward settings */}
-                {formData.type === "redirect" && (
-                  <div className="space-y-3">
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <Label className="mb-1">Scheme</Label>
-                        <select
-                          value={formData.forwardScheme}
-                          onChange={(e) => update({ forwardScheme: e.target.value })}
-                          className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                        >
-                          <option value="http">http</option>
-                          <option value="https">https</option>
-                        </select>
-                      </div>
-                      <div>
-                        <Label className="mb-1">Status Code</Label>
-                        <select
-                          value={formData.statusCode}
-                          onChange={(e) => update({ statusCode: Number(e.target.value) })}
-                          className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                        >
-                          <option value="301">301 (Permanent)</option>
-                          <option value="302">302 (Temporary)</option>
-                        </select>
-                      </div>
-                    </div>
-                    <div>
-                      <Label className="mb-1">Forward Domain</Label>
-                      <Input
-                        type="text"
-                        value={formData.forwardDomain}
-                        onChange={(e) => update({ forwardDomain: e.target.value })}
-                        placeholder="example.com"
-                      />
-                    </div>
-                    <div>
-                      <Label className="mb-1">Forward Path</Label>
-                      <Input
-                        type="text"
-                        value={formData.forwardPath}
-                        onChange={(e) => update({ forwardPath: e.target.value })}
-                        placeholder="/"
-                      />
-                    </div>
-                    <div className="flex items-center space-x-2">
-                      <Checkbox
-                        id="preservePath"
-                        checked={formData.preservePath}
-                        onCheckedChange={(checked) => update({ preservePath: checked === true })}
-                      />
-                      <Label htmlFor="preservePath" className="font-normal">
-                        Preserve Path
-                      </Label>
-                    </div>
-                  </div>
-                )}
+                </div>
 
                 {/* Group */}
                 <div>
@@ -490,27 +339,14 @@ export function HostForm({
               </div>
             </TabsContent>
 
-            {/* Upstreams Tab */}
-            {showUpstreams && (
-              <TabsContent value="upstreams" className="mt-0">
-                <UpstreamsTab
-                  upstreams={formData.upstreams}
-                  setUpstreams={(upstreams) => update({ upstreams })}
-                  balanceMethod={formData.balanceMethod}
-                  setBalanceMethod={(balanceMethod) => update({ balanceMethod })}
-                />
-              </TabsContent>
-            )}
-
             {/* Locations Tab */}
-            {showLocations && (
-              <TabsContent value="locations" className="mt-0">
-                <LocationsTab
-                  locations={formData.locations}
-                  setLocations={(locations) => update({ locations })}
-                />
-              </TabsContent>
-            )}
+            <TabsContent value="locations" className="mt-0">
+              <LocationsTab
+                locations={formData.locations}
+                setLocations={(locations) => update({ locations })}
+                accessLists={accessLists}
+              />
+            </TabsContent>
 
             {/* SSL Tab */}
             {showSsl && (
@@ -539,6 +375,8 @@ export function HostForm({
                 setWebhookUrl={(webhookUrl) => update({ webhookUrl })}
                 advancedYaml={formData.advancedYaml}
                 setAdvancedYaml={(advancedYaml) => update({ advancedYaml })}
+                streamPorts={formData.streamPorts}
+                setStreamPorts={(streamPorts) => update({ streamPorts })}
               />
             </TabsContent>
           </CardContent>
