@@ -69,13 +69,14 @@ impl Router {
                     match_type,
                 });
             }
-            // Sort by specificity: exact first, then prefix by longest path, then regex
+            // Sort by specificity: exact first, then regex, then prefix by longest path
+            // (mirrors nginx behavior where regex locations take precedence over prefix)
             compiled.sort_by(|a, b| {
                 fn priority(m: &MatchType) -> (u8, usize) {
                     match m {
                         MatchType::Exact(p) => (0, usize::MAX - p.len()),
-                        MatchType::Prefix(p) => (1, usize::MAX - p.len()),
-                        MatchType::Regex(_) => (2, 0),
+                        MatchType::Regex(_) => (1, 0),
+                        MatchType::Prefix(p) => (2, usize::MAX - p.len()),
                     }
                 }
                 priority(&a.match_type).cmp(&priority(&b.match_type))
@@ -261,6 +262,26 @@ mod tests {
 
         // "/api/users" should NOT match exact, falls through to prefix
         let (_, loc, _) = router.resolve("example.com", "/api/users").unwrap();
+        assert!(loc.is_some());
+        assert_eq!(loc.unwrap().match_type, "prefix");
+    }
+
+    #[test]
+    fn test_regex_wins_over_prefix() {
+        let locs = vec![
+            make_location("/api", "prefix"),
+            make_location(r"^/api/v\d+/users$", "regex"),
+        ];
+        let hosts = vec![make_host(1, &["example.com"], locs, true)];
+        let router = Router::build(&hosts);
+
+        // regex should win over prefix for matching path
+        let (_, loc, _) = router.resolve("example.com", "/api/v2/users").unwrap();
+        assert!(loc.is_some());
+        assert_eq!(loc.unwrap().match_type, "regex");
+
+        // non-matching regex falls through to prefix
+        let (_, loc, _) = router.resolve("example.com", "/api/other").unwrap();
         assert!(loc.is_some());
         assert_eq!(loc.unwrap().match_type, "prefix");
     }
