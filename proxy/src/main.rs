@@ -505,7 +505,7 @@ impl ProxyHttp for ProxyApp {
                     &location_path,
                     cache_expires.as_deref(),
                     ims,
-                ) {
+                ).await {
                     // Add pre-compiled custom headers from location
                     for (name, value) in &custom_headers {
                         let _ = file_resp.header.insert_header(name.clone(), value.as_ref());
@@ -554,7 +554,7 @@ impl ProxyHttp for ProxyApp {
                     &file_path,
                     cache_expires.as_deref(),
                     ims,
-                ) {
+                ).await {
                     for (name, value) in &custom_headers {
                         let _ = file_resp.header.insert_header(name.clone(), value.as_ref());
                     }

@@ -1,10 +1,9 @@
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
+use dashmap::DashMap;
 use once_cell::sync::Lazy;
 use pingora_http::ResponseHeader;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
 use std::time::{Instant, SystemTime};
 
 /// Cached file entry
@@ -15,12 +14,16 @@ struct CachedFile {
     cached_at: Instant,
 }
 
-/// Global file cache (path -> cached entry)
-static FILE_CACHE: Lazy<RwLock<HashMap<PathBuf, CachedFile>>> =
-    Lazy::new(|| RwLock::new(HashMap::new()));
+/// Global file cache (path -> cached entry) — DashMap for lock-free concurrent reads
+static FILE_CACHE: Lazy<DashMap<PathBuf, CachedFile>> =
+    Lazy::new(DashMap::new);
+
+/// Cached canonical base directories — avoids repeated canonicalize() syscalls
+static BASE_DIR_CACHE: Lazy<DashMap<String, PathBuf>> =
+    Lazy::new(DashMap::new);
 
 /// Cache TTL — re-check file modification time after this duration
-const CACHE_TTL_SECS: u64 = 5;
+const CACHE_TTL_SECS: u64 = 30;
 
 /// Result of serving a static file
 pub struct StaticFileResponse {
@@ -35,7 +38,7 @@ pub struct StaticFileResponse {
 /// - Sets Cache-Control based on `cache_expires` (e.g., "30d", "1h", "3600")
 /// - Returns 304 Not Modified if `if_modified_since` matches
 /// - Returns None if the file does not exist or is outside the base directory
-pub fn serve_static_file(
+pub async fn serve_static_file(
     base_dir: &str,
     request_path: &str,
     location_path: &str,
@@ -50,13 +53,19 @@ pub fn serve_static_file(
     file_path.push(relative);
 
     // If path is a directory, try index.html
-    if file_path.is_dir() {
+    if tokio::fs::metadata(&file_path).await.map(|m| m.is_dir()).unwrap_or(false) {
         file_path.push("index.html");
     }
 
-    // Canonicalize to prevent path traversal
-    let canonical = file_path.canonicalize().ok()?;
-    let base_canonical = Path::new(base_dir).canonicalize().ok()?;
+    // Canonicalize to prevent path traversal (async)
+    let canonical = tokio::fs::canonicalize(&file_path).await.ok()?;
+    let base_canonical = if let Some(cached) = BASE_DIR_CACHE.get(base_dir) {
+        cached.clone()
+    } else {
+        let canonical = tokio::fs::canonicalize(base_dir).await.ok()?;
+        BASE_DIR_CACHE.insert(base_dir.to_string(), canonical.clone());
+        canonical
+    };
     if !canonical.starts_with(&base_canonical) {
         log::warn!(
             "Path traversal attempt: {} resolved to {}",
@@ -66,41 +75,38 @@ pub fn serve_static_file(
         return None;
     }
 
-    if !canonical.is_file() {
+    if !tokio::fs::metadata(&canonical).await.map(|m| m.is_file()).unwrap_or(false) {
         return None;
     }
 
-    // Try to serve from cache
+    // Try to serve from cache (lock-free via DashMap — no I/O needed)
     let now = Instant::now();
-    {
-        let cache = FILE_CACHE.read().unwrap();
-        if let Some(cached) = cache.get(&canonical) {
-            if now.duration_since(cached.cached_at).as_secs() < CACHE_TTL_SECS {
-                // Check If-Modified-Since
-                if let Some(ims) = if_modified_since {
-                    if ims == cached.last_modified {
-                        let mut resp = ResponseHeader::build(304, Some(2)).ok()?;
-                        resp.insert_header(http::header::LAST_MODIFIED, &cached.last_modified)
-                            .ok()?;
-                        return Some(StaticFileResponse {
-                            header: resp,
-                            body: Bytes::new(),
-                        });
-                    }
+    if let Some(cached) = FILE_CACHE.get(&canonical) {
+        if now.duration_since(cached.cached_at).as_secs() < CACHE_TTL_SECS {
+            // Check If-Modified-Since
+            if let Some(ims) = if_modified_since {
+                if ims == cached.last_modified {
+                    let mut resp = ResponseHeader::build(304, Some(2)).ok()?;
+                    resp.insert_header(http::header::LAST_MODIFIED, &cached.last_modified)
+                        .ok()?;
+                    return Some(StaticFileResponse {
+                        header: resp,
+                        body: Bytes::new(),
+                    });
                 }
-
-                return Some(build_200_response(
-                    &cached.body,
-                    &cached.mime,
-                    &cached.last_modified,
-                    cache_expires,
-                )?);
             }
+
+            return build_200_response(
+                &cached.body,
+                &cached.mime,
+                &cached.last_modified,
+                cache_expires,
+            );
         }
     }
 
-    // Cache miss or stale — read from disk
-    let metadata = std::fs::metadata(&canonical).ok()?;
+    // Cache miss or stale — read from disk (async)
+    let metadata = tokio::fs::metadata(&canonical).await.ok()?;
     let modified: DateTime<Utc> = metadata
         .modified()
         .unwrap_or(SystemTime::UNIX_EPOCH)
@@ -120,8 +126,8 @@ pub fn serve_static_file(
         }
     }
 
-    // Read file
-    let body_vec = std::fs::read(&canonical).ok()?;
+    // Read file (async)
+    let body_vec = tokio::fs::read(&canonical).await.ok()?;
     let body = Bytes::from(body_vec);
 
     // Determine MIME type
@@ -129,18 +135,22 @@ pub fn serve_static_file(
         .first_or_octet_stream()
         .to_string();
 
-    // Update cache
-    {
-        let mut cache = FILE_CACHE.write().unwrap();
-        cache.insert(
-            canonical,
-            CachedFile {
-                body: body.clone(),
-                mime: mime.clone(),
-                last_modified: last_modified_str.clone(),
-                cached_at: now,
-            },
-        );
+    // Update cache (lock-free via DashMap), evict if too large
+    FILE_CACHE.insert(
+        canonical,
+        CachedFile {
+            body: body.clone(),
+            mime: mime.clone(),
+            last_modified: last_modified_str.clone(),
+            cached_at: now,
+        },
+    );
+    if FILE_CACHE.len() > 1024 {
+        if let Some(entry) = FILE_CACHE.iter().next() {
+            let key = entry.key().clone();
+            drop(entry);
+            FILE_CACHE.remove(&key);
+        }
     }
 
     build_200_response(&body, &mime, &last_modified_str, cache_expires)
@@ -214,47 +224,44 @@ fn parse_cache_duration(s: &str) -> u64 {
 /// - Sets Cache-Control based on `cache_expires`
 /// - Returns 304 Not Modified if `if_modified_since` matches
 /// - Returns None if the file does not exist
-pub fn serve_single_file(
+pub async fn serve_single_file(
     file_path: &str,
     cache_expires: Option<&str>,
     if_modified_since: Option<&str>,
 ) -> Option<StaticFileResponse> {
-    let canonical = Path::new(file_path).canonicalize().ok()?;
+    let canonical = tokio::fs::canonicalize(file_path).await.ok()?;
 
-    if !canonical.is_file() {
+    if !tokio::fs::metadata(&canonical).await.map(|m| m.is_file()).unwrap_or(false) {
         return None;
     }
 
-    // Try to serve from cache
+    // Try to serve from cache (lock-free via DashMap — no I/O needed)
     let now = Instant::now();
-    {
-        let cache = FILE_CACHE.read().unwrap();
-        if let Some(cached) = cache.get(&canonical) {
-            if now.duration_since(cached.cached_at).as_secs() < CACHE_TTL_SECS {
-                if let Some(ims) = if_modified_since {
-                    if ims == cached.last_modified {
-                        let mut resp = ResponseHeader::build(304, Some(2)).ok()?;
-                        resp.insert_header(http::header::LAST_MODIFIED, &cached.last_modified)
-                            .ok()?;
-                        return Some(StaticFileResponse {
-                            header: resp,
-                            body: Bytes::new(),
-                        });
-                    }
+    if let Some(cached) = FILE_CACHE.get(&canonical) {
+        if now.duration_since(cached.cached_at).as_secs() < CACHE_TTL_SECS {
+            if let Some(ims) = if_modified_since {
+                if ims == cached.last_modified {
+                    let mut resp = ResponseHeader::build(304, Some(2)).ok()?;
+                    resp.insert_header(http::header::LAST_MODIFIED, &cached.last_modified)
+                        .ok()?;
+                    return Some(StaticFileResponse {
+                        header: resp,
+                        body: Bytes::new(),
+                    });
                 }
-
-                return Some(build_200_response(
-                    &cached.body,
-                    &cached.mime,
-                    &cached.last_modified,
-                    cache_expires,
-                )?);
             }
+
+            return build_200_response(
+                &cached.body,
+                &cached.mime,
+                &cached.last_modified,
+                cache_expires,
+            );
         }
     }
 
-    // Cache miss or stale — read from disk
-    let metadata = std::fs::metadata(&canonical).ok()?;
+    // Cache miss or stale — read from disk (async)
+    let metadata = tokio::fs::metadata(&canonical).await.ok()?;
     let modified: DateTime<Utc> = metadata
         .modified()
         .unwrap_or(SystemTime::UNIX_EPOCH)
@@ -273,26 +280,23 @@ pub fn serve_single_file(
         }
     }
 
-    let body_vec = std::fs::read(&canonical).ok()?;
+    let body_vec = tokio::fs::read(&canonical).await.ok()?;
     let body = Bytes::from(body_vec);
 
     let mime = mime_guess::from_path(&canonical)
         .first_or_octet_stream()
         .to_string();
 
-    // Update cache
-    {
-        let mut cache = FILE_CACHE.write().unwrap();
-        cache.insert(
-            canonical,
-            CachedFile {
-                body: body.clone(),
-                mime: mime.clone(),
-                last_modified: last_modified_str.clone(),
-                cached_at: now,
-            },
-        );
-    }
+    // Update cache (lock-free via DashMap)
+    FILE_CACHE.insert(
+        canonical,
+        CachedFile {
+            body: body.clone(),
+            mime: mime.clone(),
+            last_modified: last_modified_str.clone(),
+            cached_at: now,
+        },
+    );
 
     build_200_response(&body, &mime, &last_modified_str, cache_expires)
 }
