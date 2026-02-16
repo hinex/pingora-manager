@@ -54,6 +54,7 @@ export interface HostFormData {
   hsts: boolean;
   http2: boolean;
   compression: boolean;
+  redirectWww: boolean;
 
   // Locations (all routing)
   locations: LocationFormData[];
@@ -104,6 +105,7 @@ const defaultFormData: HostFormData = {
   hsts: true,
   http2: true,
   compression: true,
+  redirectWww: false,
 
   locations: [{ ...defaultLocation }],
   streamPorts: [],
@@ -121,13 +123,20 @@ export function HostForm({
 }: HostFormProps) {
   const actionData = useActionData<{ error?: string }>();
   const groupFetcher = useFetcher<{ groupId?: number; error?: string }>();
+  const labelFetcher = useFetcher<{ labelId?: number; labelName?: string; labelColor?: string; error?: string }>();
 
   // Local groups list that can be augmented by inline creation
   const [localGroups, setLocalGroups] = useState(groups);
+  const [localLabels, setLocalLabels] = useState(labels);
+  const [newLabelName, setNewLabelName] = useState("");
 
   useEffect(() => {
     setLocalGroups(groups);
   }, [groups]);
+
+  useEffect(() => {
+    setLocalLabels(labels);
+  }, [labels]);
 
   // Handle group creation response
   useEffect(() => {
@@ -141,6 +150,22 @@ export function HostForm({
       setFormData((prev) => ({ ...prev, groupId: newId }));
     }
   }, [groupFetcher.data]);
+
+  // Handle label creation response
+  useEffect(() => {
+    if (labelFetcher.data && "labelId" in labelFetcher.data && labelFetcher.data.labelId) {
+      const { labelId, labelName, labelColor } = labelFetcher.data;
+      setLocalLabels((prev) => {
+        if (prev.some((l) => l.id === labelId)) return prev;
+        return [...prev, { id: labelId!, name: labelName!, color: labelColor! }];
+      });
+      // Auto-select the new label
+      setFormData((prev) => ({
+        ...prev,
+        labelIds: prev.labelIds.includes(labelId!) ? prev.labelIds : [...prev.labelIds, labelId!],
+      }));
+    }
+  }, [labelFetcher.data]);
 
   useEffect(() => {
     if (actionData?.error) {
@@ -195,6 +220,13 @@ export function HostForm({
   const showSsl = formData.domains.length > 0;
 
   const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+    // Auto-add pending domain input if non-empty
+    const pendingDomain = domainInput.trim();
+    if (pendingDomain && !formData.domains.includes(pendingDomain)) {
+      formData.domains = [...formData.domains, pendingDomain];
+      setDomainInput("");
+    }
+
     // Must have at least one location or stream port
     if (formData.locations.length === 0 && formData.streamPorts.length === 0) {
       e.preventDefault();
@@ -263,6 +295,12 @@ export function HostForm({
         setActiveTab("ssl");
         return;
       }
+    }
+
+    // Write final formData (including any pending domain) to the hidden input
+    const hiddenInput = e.currentTarget.querySelector<HTMLInputElement>('input[name="formData"]');
+    if (hiddenInput) {
+      hiddenInput.value = JSON.stringify(formData);
     }
   };
 
@@ -345,31 +383,67 @@ export function HostForm({
                 </div>
 
                 {/* Labels */}
-                {labels.length > 0 && (
-                  <div>
-                    <Label className="mb-1">Labels</Label>
-                    <div className="flex flex-wrap gap-2">
-                      {labels.map((label) => {
-                        const colorDef = LABEL_COLORS.find((c) => c.value === label.color);
-                        const isSelected = formData.labelIds.includes(label.id);
-                        return (
-                          <button
-                            key={label.id}
-                            type="button"
-                            onClick={() => toggleLabel(label.id)}
-                            className={cn(
-                              "px-2 py-1 rounded text-xs font-medium border-2 transition-colors",
-                              colorDef?.bg,
-                              isSelected ? "border-foreground" : "border-transparent opacity-60"
-                            )}
-                          >
-                            {label.name}
-                          </button>
-                        );
-                      })}
-                    </div>
+                <div>
+                  <Label className="mb-1">Labels</Label>
+                  <div className="flex flex-wrap gap-2">
+                    {localLabels.map((label) => {
+                      const colorDef = LABEL_COLORS.find((c) => c.value === label.color);
+                      const isSelected = formData.labelIds.includes(label.id);
+                      return (
+                        <button
+                          key={label.id}
+                          type="button"
+                          onClick={() => toggleLabel(label.id)}
+                          className={cn(
+                            "px-2 py-1 rounded text-xs font-medium border-2 transition-colors",
+                            colorDef?.bg,
+                            isSelected ? "border-foreground" : "border-transparent opacity-60"
+                          )}
+                        >
+                          {label.name}
+                        </button>
+                      );
+                    })}
                   </div>
-                )}
+                  <div className="flex gap-2 mt-2">
+                    <Input
+                      type="text"
+                      value={newLabelName}
+                      onChange={(e) => setNewLabelName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          if (newLabelName.trim()) {
+                            labelFetcher.submit(
+                              { intent: "createLabel", name: newLabelName.trim(), color: "green" },
+                              { method: "post" }
+                            );
+                            setNewLabelName("");
+                          }
+                        }
+                      }}
+                      placeholder="New label name..."
+                      className="flex-1 h-8 text-sm"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-8"
+                      disabled={!newLabelName.trim()}
+                      onClick={() => {
+                        labelFetcher.submit(
+                          { intent: "createLabel", name: newLabelName.trim(), color: "green" },
+                          { method: "post" }
+                        );
+                        setNewLabelName("");
+                      }}
+                    >
+                      <Plus className="mr-1 h-3 w-3" />
+                      Add
+                    </Button>
+                  </div>
+                </div>
 
                 {/* Enabled */}
                 <div className="flex items-center gap-3">
@@ -410,6 +484,8 @@ export function HostForm({
                   setHttp2={(http2) => update({ http2 })}
                   hsts={formData.hsts}
                   setHsts={(hsts) => update({ hsts })}
+                  redirectWww={formData.redirectWww}
+                  setRedirectWww={(redirectWww) => update({ redirectWww })}
                 />
               </TabsContent>
             )}

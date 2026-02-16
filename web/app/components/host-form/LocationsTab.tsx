@@ -330,6 +330,19 @@ export function LocationsTab({ locations, setLocations, accessLists = [] }: Loca
                           })}
                         </div>
                       )}
+                      <div>
+                        <Label className="text-xs mb-1">Forward Path</Label>
+                        <Input
+                          type="text"
+                          value={location.forwardPath}
+                          onChange={(e) => updateLocation(locIndex, { forwardPath: e.target.value })}
+                          placeholder="/ (no rewrite)"
+                          className="text-xs"
+                        />
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Rewrites the location path prefix when proxying (e.g. path "/api" + forward path "/api-test" → /api/users becomes /api-test/users)
+                        </p>
+                      </div>
                     </div>
                   )}
 

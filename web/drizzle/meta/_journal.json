@@ -29,6 +29,13 @@
       "when": 1770794079915,
       "tag": "0003_add_compression",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1770794079916,
+      "tag": "0004_add_redirect_www",
+      "breakpoints": true
     }
   ]
 }

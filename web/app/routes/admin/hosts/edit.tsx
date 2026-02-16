@@ -56,6 +56,19 @@ export async function action({ request, params }: Route.ActionArgs) {
     return { groupId: result.id };
   }
 
+  // Handle inline label creation
+  if (intent === "createLabel") {
+    const name = formData.get("name") as string;
+    const color = formData.get("color") as string || "green";
+    if (!name?.trim()) return { error: "Label name is required" };
+    const result = db
+      .insert(hostLabels)
+      .values({ name: name.trim(), color, createdAt: new Date() })
+      .returning()
+      .get();
+    return { labelId: result.id, labelName: result.name, labelColor: result.color };
+  }
+
   let data: HostFormData;
   try {
     data = JSON.parse(formData.get("formData") as string);
@@ -119,6 +132,7 @@ export async function action({ request, params }: Route.ActionArgs) {
       hsts: data.hsts,
       http2: data.http2,
       compression: data.compression,
+      redirectWww: data.redirectWww ?? false,
       locations: data.locations as any,
       streamPorts: data.streamPorts as any,
       webhookUrl: data.webhookUrl || null,
@@ -171,6 +185,7 @@ export default function EditHost({ loaderData }: Route.ComponentProps) {
     hsts: host.hsts,
     http2: host.http2,
     compression: host.compression,
+    redirectWww: host.redirectWww,
     locations: host.locations as any ?? [],
     streamPorts: host.streamPorts as any ?? [],
     webhookUrl: host.webhookUrl || "",

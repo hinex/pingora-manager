@@ -52,6 +52,7 @@ export const hosts = sqliteTable("hosts", {
   hsts: integer("hsts", { mode: "boolean" }).notNull().default(true),
   http2: integer("http2", { mode: "boolean" }).notNull().default(true),
   compression: integer("compression", { mode: "boolean" }).notNull().default(true),
+  redirectWww: integer("redirect_www", { mode: "boolean" }).notNull().default(false),
 
   // Locations (all routing logic lives here)
   locations: text("locations", { mode: "json" })

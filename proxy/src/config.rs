@@ -72,6 +72,8 @@ pub struct HostConfig {
     pub enabled: bool,
     #[serde(default = "default_compression")]
     pub compression: bool,
+    #[serde(alias = "redirect_www", default)]
+    pub redirect_www: bool,
 }
 
 fn default_balance_method() -> String {

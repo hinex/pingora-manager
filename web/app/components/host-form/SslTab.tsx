@@ -17,6 +17,8 @@ interface SslTabProps {
   setHttp2: (http2: boolean) => void;
   hsts: boolean;
   setHsts: (hsts: boolean) => void;
+  redirectWww: boolean;
+  setRedirectWww: (redirectWww: boolean) => void;
 }
 
 const sslOptions = [
@@ -38,6 +40,8 @@ export function SslTab({
   setHttp2,
   hsts,
   setHsts,
+  redirectWww,
+  setRedirectWww,
 }: SslTabProps) {
   return (
     <div className="space-y-4">
@@ -116,6 +120,11 @@ export function SslTab({
         <div className="flex items-center gap-3">
           <Switch checked={hsts} onCheckedChange={setHsts} />
           <Label>Enable HSTS (HTTP Strict Transport Security)</Label>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <Switch checked={redirectWww} onCheckedChange={setRedirectWww} />
+          <Label>Redirect from www (301 www.domain → domain)</Label>
         </div>
       </div>
     </div>

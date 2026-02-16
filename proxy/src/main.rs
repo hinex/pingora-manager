@@ -122,6 +122,8 @@ enum RequestAction {
         compression: bool,
         /// Pre-compiled custom headers from the matched location (cheap Arc clones)
         custom_headers: Vec<(http::header::HeaderName, Arc<str>)>,
+        /// Path rewrite: (location_prefix, forward_path) — rewrites prefix before proxying
+        rewrite_path: Option<(Arc<str>, Arc<str>)>,
     },
     /// Send a redirect response (from a redirect-type location)
     Redirect {
@@ -204,6 +206,8 @@ pub struct ProxyCtx {
     error_log_path: Option<Arc<str>>,
     /// Async log sender (non-blocking channel send instead of file I/O)
     log_sender: log_writer::LogSender,
+    /// Path rewrite: (location_prefix, forward_path) for upstream URI rewriting
+    rewrite_path: Option<(Arc<str>, Arc<str>)>,
 }
 
 impl ProxyCtx {
@@ -221,6 +225,7 @@ impl ProxyCtx {
             access_log_path: None,
             error_log_path: None,
             log_sender,
+            rewrite_path: None,
         }
     }
 
@@ -268,6 +273,7 @@ impl ProxyApp {
                     hsts: false,
                     compression: true,
                     custom_headers: Vec::new(),
+                    rewrite_path: None,
                 };
             }
         }
@@ -294,6 +300,18 @@ impl ProxyApp {
         let host_id = Some(host_config.id);
         let group_id = host_config.group_id;
         let hsts = host_config.hsts;
+
+        // Check www→non-www redirect
+        if host_config.redirect_www {
+            if let Some(non_www) = host_str.strip_prefix("www.") {
+                let scheme = if server_port == Some(state.config.global.listen.https) { "https" } else { "http" };
+                let location_url = format!("{}://{}{}", scheme, non_www, path);
+                return RequestAction::Redirect {
+                    status_code: 301,
+                    location: location_url,
+                };
+            }
+        }
 
         // Check SSL force_https redirect
         if let Some(ref ssl_conf) = host_config.ssl {
@@ -398,6 +416,9 @@ impl ProxyApp {
                     });
 
                     if let Some(addr) = upstream_addr {
+                        let rewrite_path = loc.forward_path.as_deref()
+                            .filter(|fp| !fp.is_empty() && *fp != "/")
+                            .map(|fp| (Arc::from(loc.path.as_str()), Arc::from(fp)));
                         return RequestAction::Proxy {
                             upstream_addr: addr,
                             host_id,
@@ -405,6 +426,7 @@ impl ProxyApp {
                             hsts,
                             compression: host_config.compression,
                             custom_headers,
+                            rewrite_path,
                         };
                     } else {
                         return RequestAction::NoUpstream {
@@ -485,6 +507,7 @@ impl ProxyHttp for ProxyApp {
                 hsts,
                 compression,
                 custom_headers,
+                rewrite_path,
             } => {
                 ctx.upstream_addr = Some(upstream_addr);
                 ctx.host_id = host_id;
@@ -492,6 +515,7 @@ impl ProxyHttp for ProxyApp {
                 ctx.hsts = hsts;
                 ctx.compression = compression;
                 ctx.custom_headers = custom_headers;
+                ctx.rewrite_path = rewrite_path;
                 ctx.populate_log_paths(host_id, &self.state.load());
                 Ok(false)
             }
@@ -775,8 +799,25 @@ impl ProxyHttp for ProxyApp {
         &self,
         session: &mut Session,
         upstream_request: &mut RequestHeader,
-        _ctx: &mut Self::CTX,
+        ctx: &mut Self::CTX,
     ) -> Result<()> {
+        // Rewrite path if configured (e.g., /api → /api-test)
+        if let Some((ref prefix, ref replacement)) = ctx.rewrite_path {
+            let orig_path = upstream_request.uri.path();
+            if let Some(suffix) = orig_path.strip_prefix(prefix.as_ref()) {
+                let new_path = format!("{}{}", replacement, suffix);
+                // Preserve query string if present
+                let new_pq = if let Some(q) = upstream_request.uri.query() {
+                    format!("{}?{}", new_path, q)
+                } else {
+                    new_path
+                };
+                if let Ok(new_uri) = new_pq.parse::<http::Uri>() {
+                    upstream_request.set_uri(new_uri);
+                }
+            }
+        }
+
         // Forward the original Host header
         if let Some(host) = session
             .req_header()
@@ -1131,6 +1172,7 @@ mod tests {
             http2: false,
             enabled: true,
             compression: true,
+            redirect_www: false,
         }
     }
 
@@ -1151,6 +1193,7 @@ mod tests {
             http2: false,
             enabled: true,
             compression: true,
+            redirect_www: false,
         }
     }
 
@@ -1168,6 +1211,7 @@ mod tests {
             http2: false,
             enabled: true,
             compression: true,
+            redirect_www: false,
         }
     }
 
@@ -1199,6 +1243,7 @@ mod tests {
             http2: false,
             enabled: true,
             compression: true,
+            redirect_www: false,
         }
     }
 
@@ -1230,6 +1275,7 @@ mod tests {
             http2: false,
             enabled: true,
             compression: true,
+            redirect_www: false,
         }
     }
 
@@ -1245,6 +1291,7 @@ mod tests {
             http2: false,
             enabled: true,
             compression: true,
+            redirect_www: false,
         }
     }
 
@@ -1509,6 +1556,7 @@ mod tests {
             http2: false,
             enabled: true,
             compression: true,
+            redirect_www: false,
         };
         let app = build_app(vec![host], HashMap::new());
         let ip: IpAddr = "1.2.3.4".parse().unwrap();
@@ -1771,6 +1819,7 @@ mod tests {
             http2: false,
             enabled: true,
             compression: true,
+            redirect_www: false,
         };
         let config = AppConfig {
             global: GlobalConfig {
@@ -1819,6 +1868,7 @@ mod tests {
             http2: false,
             enabled: true,
             compression: true,
+            redirect_www: false,
         }
     }
 

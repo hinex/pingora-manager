@@ -165,6 +165,7 @@ mod tests {
             http2: false,
             enabled,
             compression: true,
+            redirect_www: false,
         }
     }
 

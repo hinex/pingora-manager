@@ -36,14 +36,26 @@ pub async fn run_log_writer(mut rx: mpsc::UnboundedReceiver<LogEntry>) {
             }
         };
 
-        let writer = writers.entry(entry.file_path.clone()).or_insert_with(|| {
-            let file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&entry.file_path)
-                .expect("Failed to open log file");
-            BufWriter::with_capacity(8192, file)
-        });
+        let writer = match writers.entry(entry.file_path.clone()) {
+            std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+            std::collections::hash_map::Entry::Vacant(e) => {
+                // Ensure parent directory exists before opening the log file
+                if let Some(parent) = std::path::Path::new(&entry.file_path).parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                match OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&entry.file_path)
+                {
+                    Ok(file) => e.insert(BufWriter::with_capacity(8192, file)),
+                    Err(err) => {
+                        eprintln!("Failed to open log file {}: {}", entry.file_path, err);
+                        continue;
+                    }
+                }
+            }
+        };
 
         let _ = writer.write_all(entry.line.as_bytes());
         count += 1;

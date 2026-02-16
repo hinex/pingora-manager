@@ -38,7 +38,11 @@ impl Router {
             let host_arc = Arc::new(host.clone());
             for domain in &host.domains {
                 let domain_lower = domain.to_lowercase();
-                host_map.insert(domain_lower, host_arc.clone());
+                host_map.insert(domain_lower.clone(), host_arc.clone());
+                // Auto-register www.{domain} for redirect_www hosts
+                if host.redirect_www && !domain_lower.starts_with("www.") {
+                    host_map.insert(format!("www.{}", domain_lower), host_arc.clone());
+                }
             }
 
             // Compile locations for this host
@@ -160,6 +164,7 @@ mod tests {
             http2: false,
             enabled,
             compression: true,
+            redirect_www: false,
         }
     }
 
