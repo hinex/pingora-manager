@@ -65,6 +65,17 @@ impl Router {
                     match_type,
                 });
             }
+            // Sort by specificity: exact first, then prefix by longest path, then regex
+            compiled.sort_by(|a, b| {
+                fn priority(m: &MatchType) -> (u8, usize) {
+                    match m {
+                        MatchType::Exact(p) => (0, usize::MAX - p.len()),
+                        MatchType::Prefix(p) => (1, usize::MAX - p.len()),
+                        MatchType::Regex(_) => (2, 0),
+                    }
+                }
+                priority(&a.match_type).cmp(&priority(&b.match_type))
+            });
             location_map.insert(host.id, compiled);
         }
 
@@ -201,6 +212,46 @@ mod tests {
         let hosts = vec![make_host(1, &["example.com"], vec![], false)];
         let router = Router::build(&hosts);
         assert!(router.resolve("example.com", "/").is_none());
+    }
+
+    #[test]
+    fn test_longer_prefix_wins_over_root() {
+        // "/" is first in array, but "/api" should win for /api/users
+        let locs = vec![
+            make_location("/", "prefix"),
+            make_location("/api", "prefix"),
+        ];
+        let hosts = vec![make_host(1, &["example.com"], locs, true)];
+        let router = Router::build(&hosts);
+
+        let (_, loc) = router.resolve("example.com", "/api/users").unwrap();
+        assert!(loc.is_some());
+        assert_eq!(loc.unwrap().path, "/api");
+
+        // "/" should still match for non-api paths
+        let (_, loc) = router.resolve("example.com", "/about").unwrap();
+        assert!(loc.is_some());
+        assert_eq!(loc.unwrap().path, "/");
+    }
+
+    #[test]
+    fn test_exact_wins_over_prefix() {
+        let locs = vec![
+            make_location("/api", "prefix"),
+            make_location("/api", "exact"),
+        ];
+        let hosts = vec![make_host(1, &["example.com"], locs, true)];
+        let router = Router::build(&hosts);
+
+        // exact "/api" should win
+        let (_, loc) = router.resolve("example.com", "/api").unwrap();
+        assert!(loc.is_some());
+        assert_eq!(loc.unwrap().match_type, "exact");
+
+        // "/api/users" should NOT match exact, falls through to prefix
+        let (_, loc) = router.resolve("example.com", "/api/users").unwrap();
+        assert!(loc.is_some());
+        assert_eq!(loc.unwrap().match_type, "prefix");
     }
 
     #[test]
