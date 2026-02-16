@@ -413,12 +413,11 @@ impl ProxyHttp for ProxyApp {
     /// Handle the incoming request: access control, redirects, static files
     async fn request_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<bool> {
         // Extract host header without allocating if possible
-        let host_header: Option<String> = session
+        let host_header: Option<&str> = session
             .req_header()
             .headers
             .get("host")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string());
+            .and_then(|v| v.to_str().ok());
 
         let path = session.req_header().uri.path();
         let client_ip = session
@@ -436,25 +435,14 @@ impl ProxyHttp for ProxyApp {
             .server_addr()
             .and_then(|a| a.as_inet())
             .map(|inet| inet.port());
-        let ims: Option<&str> = session
-            .req_header()
-            .headers
-            .get(http::header::IF_MODIFIED_SINCE)
-            .and_then(|v| v.to_str().ok());
-
-        // We need owned copies of borrowed values for resolve_request
-        // since it accesses shared state
-        let ims_owned = ims.map(|s| s.to_string());
-        let auth_owned = auth_header.map(|s| s.to_string());
-        let path_owned = path.to_string();
 
         // Resolve the request action (lock-free via ArcSwap)
         let action = self.resolve_request(
-            host_header.as_deref(),
-            &path_owned,
+            host_header,
+            path,
             server_port,
             client_ip,
-            auth_owned.as_deref(),
+            auth_header,
         );
 
         match action {
@@ -505,12 +493,18 @@ impl ProxyHttp for ProxyApp {
                 error_pages_dir,
                 custom_headers,
             } => {
+                let path_owned = path.to_string();
+                let ims: Option<&str> = session
+                    .req_header()
+                    .headers
+                    .get(http::header::IF_MODIFIED_SINCE)
+                    .and_then(|v| v.to_str().ok());
                 if let Some(mut file_resp) = static_files::serve_static_file(
                     &static_dir,
                     &path_owned,
                     &location_path,
                     cache_expires.as_deref(),
-                    ims_owned.as_deref(),
+                    ims,
                 ) {
                     // Add pre-compiled custom headers from location
                     for (name, value) in &custom_headers {
@@ -551,10 +545,15 @@ impl ProxyHttp for ProxyApp {
                 error_pages_dir,
                 custom_headers,
             } => {
+                let ims: Option<&str> = session
+                    .req_header()
+                    .headers
+                    .get(http::header::IF_MODIFIED_SINCE)
+                    .and_then(|v| v.to_str().ok());
                 if let Some(mut file_resp) = static_files::serve_single_file(
                     &file_path,
                     cache_expires.as_deref(),
-                    ims_owned.as_deref(),
+                    ims,
                 ) {
                     for (name, value) in &custom_headers {
                         let _ = file_resp.header.insert_header(name.clone(), value.as_ref());
