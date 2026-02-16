@@ -10,6 +10,8 @@ mod upstream;
 
 use async_trait::async_trait;
 use config::AppConfig;
+use pingora_core::modules::http::HttpModules;
+use pingora_core::modules::http::compression::{ResponseCompressionBuilder, ResponseCompression};
 use pingora_core::prelude::*;
 use pingora_core::upstreams::peer::Peer;
 use pingora_http::{RequestHeader, ResponseHeader};
@@ -428,6 +430,10 @@ impl ProxyApp {
 impl ProxyHttp for ProxyApp {
     type CTX = ProxyCtx;
 
+    fn init_downstream_modules(&self, modules: &mut HttpModules) {
+        modules.add_module(ResponseCompressionBuilder::enable(6));
+    }
+
     fn new_ctx(&self) -> Self::CTX {
         let state = self.state.load();
         ProxyCtx::new(
@@ -806,10 +812,17 @@ impl ProxyHttp for ProxyApp {
     /// Modify the response before sending to downstream
     async fn response_filter(
         &self,
-        _session: &mut Session,
+        session: &mut Session,
         upstream_response: &mut ResponseHeader,
         ctx: &mut Self::CTX,
     ) -> Result<()> {
+        // Disable downstream compression if host opted out
+        if !ctx.compression {
+            if let Some(compression) = session.downstream_modules_ctx.get_mut::<ResponseCompression>() {
+                compression.adjust_level(0);
+            }
+        }
+
         // Add HSTS header if configured
         if ctx.hsts {
             let _ = upstream_response.insert_header(
