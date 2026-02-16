@@ -498,6 +498,21 @@ function GroupedHostsView({
     );
   }
 
+  // When no groups exist, show a helpful empty state message and flat table
+  if (groups.length === 0 && hostsList.length > 0) {
+    return (
+      <div className="space-y-6">
+        <div className="rounded-md border border-dashed p-6 text-center space-y-2">
+          <p className="text-sm font-medium">No groups created yet</p>
+          <p className="text-sm text-muted-foreground">
+            Organize your hosts into groups when creating or editing a host.
+          </p>
+        </div>
+        <AllHostsTable hosts={hostsList} groupMap={groupMap} />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       {orderedGroups.map((section) => (

@@ -36,6 +36,18 @@ export async function loader({ params }: Route.LoaderArgs) {
 export async function action({ request, params }: Route.ActionArgs) {
   const id = Number(params.id);
   const formData = await request.formData();
+
+  const intent = formData.get("intent");
+  if (intent === "createGroup") {
+    const name = formData.get("name") as string;
+    if (!name?.trim()) return { error: "Group name is required" };
+    const result = db.insert(hostGroups)
+      .values({ name: name.trim(), createdAt: new Date() })
+      .returning()
+      .get();
+    return { groupId: result.id };
+  }
+
   let data: HostFormData;
   try {
     data = JSON.parse(formData.get("formData") as string);

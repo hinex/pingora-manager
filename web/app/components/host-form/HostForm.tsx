@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Form, useActionData } from "react-router";
+import { Form, useActionData, useFetcher } from "react-router";
 import { toast } from "sonner";
 import { LocationsTab } from "./LocationsTab";
 import { SslTab } from "./SslTab";
@@ -14,6 +14,7 @@ import { Switch } from "~/components/ui/switch";
 import { cn } from "~/lib/utils";
 import { X, Plus } from "lucide-react";
 import { LABEL_COLORS, type LabelItem } from "~/components/LabelsModal";
+import { GroupCombobox } from "./GroupCombobox";
 
 export interface LocationFormData {
   path: string;
@@ -106,12 +107,23 @@ export function HostForm({
   submitLabel,
 }: HostFormProps) {
   const actionData = useActionData<{ error?: string }>();
+  const groupFetcher = useFetcher<{ groupId?: number; error?: string }>();
 
   useEffect(() => {
     if (actionData?.error) {
       toast.error(actionData.error);
     }
   }, [actionData]);
+
+  // When a new group is created via fetcher, select it
+  useEffect(() => {
+    if (groupFetcher.data?.groupId) {
+      update({ groupId: groupFetcher.data.groupId });
+    }
+    if (groupFetcher.data?.error) {
+      toast.error(groupFetcher.data.error);
+    }
+  }, [groupFetcher.data]);
 
   const [activeTab, setActiveTab] = useState("general");
   const [formData, setFormData] = useState<HostFormData>({
@@ -290,18 +302,17 @@ export function HostForm({
                 {/* Group */}
                 <div>
                   <Label className="mb-1">Group</Label>
-                  <select
-                    value={formData.groupId ?? ""}
-                    onChange={(e) => update({ groupId: e.target.value ? Number(e.target.value) : null })}
-                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                  >
-                    <option value="">No Group</option>
-                    {groups.map((group) => (
-                      <option key={group.id} value={group.id}>
-                        {group.name}
-                      </option>
-                    ))}
-                  </select>
+                  <GroupCombobox
+                    groups={groups}
+                    value={formData.groupId}
+                    onChange={(groupId) => update({ groupId })}
+                    onCreateGroup={(name) => {
+                      groupFetcher.submit(
+                        { intent: "createGroup", name },
+                        { method: "post" }
+                      );
+                    }}
+                  />
                 </div>
 
                 {/* Labels */}
