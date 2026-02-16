@@ -2,92 +2,115 @@ import { useState } from "react";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { Button } from "~/components/ui/button";
+import { Checkbox } from "~/components/ui/checkbox";
 import { Plus, Trash2, ChevronDown, ChevronUp } from "lucide-react";
-
-interface LocationUpstream {
-  server: string;
-  port: number;
-  weight: number;
-}
-
-interface Location {
-  path: string;
-  matchType: string;
-  type: string;
-  upstreams?: LocationUpstream[];
-  staticDir?: string;
-  cacheExpires?: string;
-  accessListId?: number;
-  headers?: Record<string, string>;
-}
+import { defaultLocation, type LocationFormData } from "./HostForm";
 
 interface LocationsTabProps {
-  locations: Location[];
-  setLocations: (locations: Location[]) => void;
+  locations: LocationFormData[];
+  setLocations: (locations: LocationFormData[]) => void;
+  accessLists?: Array<{ id: number; name: string }>;
 }
 
-export function LocationsTab({ locations, setLocations }: LocationsTabProps) {
-  const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
+export function LocationsTab({ locations, setLocations, accessLists = [] }: LocationsTabProps) {
+  const [expandedIndex, setExpandedIndex] = useState<number | null>(
+    locations.length === 1 ? 0 : null
+  );
 
   const addLocation = () => {
-    setLocations([
-      ...locations,
-      {
-        path: "/",
-        matchType: "prefix",
-        type: "proxy",
-        upstreams: [],
-      },
-    ]);
+    setLocations([...locations, { ...defaultLocation }]);
     setExpandedIndex(locations.length);
   };
 
   const removeLocation = (index: number) => {
     setLocations(locations.filter((_, i) => i !== index));
     if (expandedIndex === index) setExpandedIndex(null);
+    else if (expandedIndex !== null && expandedIndex > index) {
+      setExpandedIndex(expandedIndex - 1);
+    }
   };
 
-  const updateLocation = (index: number, field: string, value: any) => {
+  const updateLocation = (index: number, partial: Partial<LocationFormData>) => {
     const updated = [...locations];
-    updated[index] = { ...updated[index], [field]: value };
+    updated[index] = { ...updated[index], ...partial };
     setLocations(updated);
   };
 
-  const addLocationUpstream = (locIndex: number) => {
-    const updated = [...locations];
-    updated[locIndex] = {
-      ...updated[locIndex],
-      upstreams: [...(updated[locIndex].upstreams || []), { server: "", port: 80, weight: 1 }],
-    };
-    setLocations(updated);
+  const addUpstream = (locIndex: number) => {
+    const loc = locations[locIndex];
+    updateLocation(locIndex, {
+      upstreams: [...loc.upstreams, { server: "", port: 80, weight: 1 }],
+    });
   };
 
-  const removeLocationUpstream = (locIndex: number, upstreamIndex: number) => {
-    const updated = [...locations];
-    updated[locIndex] = {
-      ...updated[locIndex],
-      upstreams: updated[locIndex].upstreams?.filter((_, i) => i !== upstreamIndex),
-    };
-    setLocations(updated);
+  const removeUpstream = (locIndex: number, upstreamIndex: number) => {
+    const loc = locations[locIndex];
+    updateLocation(locIndex, {
+      upstreams: loc.upstreams.filter((_, i) => i !== upstreamIndex),
+    });
   };
 
-  const updateLocationUpstream = (
+  const updateUpstream = (
     locIndex: number,
     upstreamIndex: number,
     field: string,
     value: string | number
   ) => {
-    const updated = [...locations];
-    const upstreams = [...(updated[locIndex].upstreams || [])];
+    const loc = locations[locIndex];
+    const upstreams = [...loc.upstreams];
     upstreams[upstreamIndex] = { ...upstreams[upstreamIndex], [field]: value };
-    updated[locIndex] = { ...updated[locIndex], upstreams };
-    setLocations(updated);
+    updateLocation(locIndex, { upstreams });
+  };
+
+  const addHeader = (locIndex: number) => {
+    const loc = locations[locIndex];
+    updateLocation(locIndex, {
+      headers: { ...loc.headers, "": "" },
+    });
+  };
+
+  const removeHeader = (locIndex: number, key: string) => {
+    const loc = locations[locIndex];
+    const headers = { ...loc.headers };
+    delete headers[key];
+    updateLocation(locIndex, { headers });
+  };
+
+  const updateHeader = (locIndex: number, oldKey: string, newKey: string, newValue: string) => {
+    const loc = locations[locIndex];
+    const entries = Object.entries(loc.headers);
+    const newHeaders: Record<string, string> = {};
+    for (const [k, v] of entries) {
+      if (k === oldKey) {
+        newHeaders[newKey] = newValue;
+      } else {
+        newHeaders[k] = v;
+      }
+    }
+    updateLocation(locIndex, { headers: newHeaders });
+  };
+
+  const getSummary = (loc: LocationFormData) => {
+    switch (loc.type) {
+      case "proxy": {
+        const count = loc.upstreams.length;
+        if (count === 0) return "No upstreams";
+        if (count === 1) return `\u2192 ${loc.upstreams[0].server}:${loc.upstreams[0].port}`;
+        return `\u2192 ${count} upstreams (${loc.balanceMethod})`;
+      }
+      case "static":
+        return loc.staticDir ? `Static: ${loc.staticDir}` : "No directory set";
+      case "redirect":
+        return loc.forwardDomain
+          ? `\u2192 ${loc.forwardScheme}://${loc.forwardDomain}${loc.forwardPath}`
+          : "No target set";
+    }
   };
 
   return (
     <div className="space-y-4">
       <div className="flex justify-between items-center">
-        <Label>Location Blocks</Label>
+        <Label>Locations</Label>
         <Button variant="outline" size="sm" type="button" onClick={addLocation}>
           <Plus className="mr-2 h-4 w-4" />
           Add Location
@@ -96,27 +119,28 @@ export function LocationsTab({ locations, setLocations }: LocationsTabProps) {
 
       {locations.length === 0 ? (
         <div className="rounded-md border border-dashed p-4 text-center text-sm text-muted-foreground">
-          No locations configured. The default upstream will be used.
+          No locations configured. Add a location to define routing behavior.
         </div>
       ) : (
         <div className="space-y-3">
           {locations.map((location, locIndex) => (
             <div key={locIndex} className="rounded-md border">
+              {/* Collapsed header */}
               <div
                 className="flex items-center justify-between px-4 py-3 bg-muted/50 cursor-pointer"
                 onClick={() =>
                   setExpandedIndex(expandedIndex === locIndex ? null : locIndex)
                 }
               >
-                <div>
-                  <span className="font-medium">
-                    {location.path || "(empty path)"}
+                <div className="flex items-center gap-3 text-sm min-w-0">
+                  <span className="font-mono font-medium shrink-0">
+                    {location.path || "/"}
                   </span>
-                  <span className="text-sm text-muted-foreground ml-2">
-                    ({location.matchType} - {location.type})
-                  </span>
+                  <span className="text-muted-foreground shrink-0">{location.matchType}</span>
+                  <span className="capitalize shrink-0">{location.type}</span>
+                  <span className="text-muted-foreground truncate">{getSummary(location)}</span>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 shrink-0">
                   <Button
                     variant="ghost"
                     size="sm"
@@ -136,17 +160,17 @@ export function LocationsTab({ locations, setLocations }: LocationsTabProps) {
                 </div>
               </div>
 
+              {/* Expanded content */}
               {expandedIndex === locIndex && (
                 <div className="p-4 space-y-4 border-t">
+                  {/* Row 1: Path + Match Type + Type */}
                   <div className="grid grid-cols-3 gap-3">
                     <div>
                       <Label className="text-xs mb-1">Path</Label>
                       <Input
                         type="text"
                         value={location.path}
-                        onChange={(e) =>
-                          updateLocation(locIndex, "path", e.target.value)
-                        }
+                        onChange={(e) => updateLocation(locIndex, { path: e.target.value })}
                         placeholder="/"
                       />
                     </div>
@@ -154,9 +178,7 @@ export function LocationsTab({ locations, setLocations }: LocationsTabProps) {
                       <Label className="text-xs mb-1">Match Type</Label>
                       <select
                         value={location.matchType}
-                        onChange={(e) =>
-                          updateLocation(locIndex, "matchType", e.target.value)
-                        }
+                        onChange={(e) => updateLocation(locIndex, { matchType: e.target.value as any })}
                         className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       >
                         <option value="prefix">Prefix</option>
@@ -168,42 +190,52 @@ export function LocationsTab({ locations, setLocations }: LocationsTabProps) {
                       <Label className="text-xs mb-1">Type</Label>
                       <select
                         value={location.type}
-                        onChange={(e) =>
-                          updateLocation(locIndex, "type", e.target.value)
-                        }
+                        onChange={(e) => updateLocation(locIndex, { type: e.target.value as any })}
                         className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       >
                         <option value="proxy">Proxy</option>
                         <option value="static">Static</option>
+                        <option value="redirect">Redirect</option>
                       </select>
                     </div>
                   </div>
 
+                  {/* Type-specific section: Proxy */}
                   {location.type === "proxy" && (
-                    <div>
-                      <div className="flex justify-between items-center mb-2">
-                        <Label className="text-xs">
-                          Upstreams (optional, uses default if empty)
-                        </Label>
+                    <div className="space-y-3">
+                      <div>
+                        <Label className="text-xs mb-1">Load Balancing Method</Label>
+                        <select
+                          value={location.balanceMethod}
+                          onChange={(e) => updateLocation(locIndex, { balanceMethod: e.target.value })}
+                          className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        >
+                          <option value="round_robin">Round Robin</option>
+                          <option value="weighted">Weighted</option>
+                          <option value="least_conn">Least Connections</option>
+                          <option value="ip_hash">IP Hash</option>
+                          <option value="random">Random</option>
+                        </select>
+                      </div>
+
+                      <div className="flex justify-between items-center">
+                        <Label className="text-xs">Upstreams</Label>
                         <Button
                           variant="outline"
                           size="sm"
                           type="button"
-                          onClick={() => addLocationUpstream(locIndex)}
+                          onClick={() => addUpstream(locIndex)}
                         >
                           <Plus className="mr-2 h-3 w-3" />
                           Add Upstream
                         </Button>
                       </div>
 
-                      {location.upstreams && location.upstreams.length > 0 && (
+                      {location.upstreams.length > 0 && (
                         <div className="space-y-2">
                           {location.upstreams.map((upstream, upIndex) => (
-                            <div
-                              key={upIndex}
-                              className="rounded-md bg-muted/50 p-3 space-y-2"
-                            >
-                              <div className="flex justify-between items-center">
+                            <div key={upIndex} className="rounded-md bg-muted/50 p-3">
+                              <div className="flex justify-between items-center mb-2">
                                 <span className="text-xs text-muted-foreground">
                                   Upstream {upIndex + 1}
                                 </span>
@@ -211,9 +243,7 @@ export function LocationsTab({ locations, setLocations }: LocationsTabProps) {
                                   variant="ghost"
                                   size="sm"
                                   type="button"
-                                  onClick={() =>
-                                    removeLocationUpstream(locIndex, upIndex)
-                                  }
+                                  onClick={() => removeUpstream(locIndex, upIndex)}
                                 >
                                   <Trash2 className="h-3 w-3" />
                                 </Button>
@@ -222,44 +252,24 @@ export function LocationsTab({ locations, setLocations }: LocationsTabProps) {
                                 <Input
                                   type="text"
                                   value={upstream.server}
-                                  onChange={(e) =>
-                                    updateLocationUpstream(
-                                      locIndex,
-                                      upIndex,
-                                      "server",
-                                      e.target.value
-                                    )
-                                  }
+                                  onChange={(e) => updateUpstream(locIndex, upIndex, "server", e.target.value)}
                                   placeholder="Server"
                                   className="text-xs"
                                 />
                                 <Input
                                   type="number"
                                   value={upstream.port}
-                                  onChange={(e) =>
-                                    updateLocationUpstream(
-                                      locIndex,
-                                      upIndex,
-                                      "port",
-                                      Number(e.target.value)
-                                    )
-                                  }
+                                  onChange={(e) => updateUpstream(locIndex, upIndex, "port", Number(e.target.value))}
                                   placeholder="Port"
                                   className="text-xs"
                                 />
                                 <Input
                                   type="number"
                                   value={upstream.weight}
-                                  onChange={(e) =>
-                                    updateLocationUpstream(
-                                      locIndex,
-                                      upIndex,
-                                      "weight",
-                                      Number(e.target.value)
-                                    )
-                                  }
+                                  onChange={(e) => updateUpstream(locIndex, upIndex, "weight", Number(e.target.value))}
                                   placeholder="Weight"
                                   className="text-xs"
+                                  min={1}
                                 />
                               </div>
                             </div>
@@ -269,16 +279,15 @@ export function LocationsTab({ locations, setLocations }: LocationsTabProps) {
                     </div>
                   )}
 
+                  {/* Type-specific section: Static */}
                   {location.type === "static" && (
                     <div className="space-y-3">
                       <div>
                         <Label className="text-xs mb-1">Static Directory Path</Label>
                         <Input
                           type="text"
-                          value={location.staticDir || ""}
-                          onChange={(e) =>
-                            updateLocation(locIndex, "staticDir", e.target.value)
-                          }
+                          value={location.staticDir}
+                          onChange={(e) => updateLocation(locIndex, { staticDir: e.target.value })}
                           placeholder="/var/www/html"
                         />
                       </div>
@@ -286,17 +295,140 @@ export function LocationsTab({ locations, setLocations }: LocationsTabProps) {
                         <Label className="text-xs mb-1">Cache Expires</Label>
                         <Input
                           type="text"
-                          value={location.cacheExpires || ""}
-                          onChange={(e) =>
-                            updateLocation(
-                              locIndex,
-                              "cacheExpires",
-                              e.target.value
-                            )
-                          }
-                          placeholder="1h"
+                          value={location.cacheExpires}
+                          onChange={(e) => updateLocation(locIndex, { cacheExpires: e.target.value })}
+                          placeholder="30d, 1h, 3600s"
                         />
                       </div>
+                    </div>
+                  )}
+
+                  {/* Type-specific section: Redirect */}
+                  {location.type === "redirect" && (
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <Label className="text-xs mb-1">Scheme</Label>
+                          <select
+                            value={location.forwardScheme}
+                            onChange={(e) => updateLocation(locIndex, { forwardScheme: e.target.value })}
+                            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                          >
+                            <option value="http">http</option>
+                            <option value="https">https</option>
+                          </select>
+                        </div>
+                        <div>
+                          <Label className="text-xs mb-1">Status Code</Label>
+                          <select
+                            value={location.statusCode}
+                            onChange={(e) => updateLocation(locIndex, { statusCode: Number(e.target.value) })}
+                            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                          >
+                            <option value="301">301 (Permanent)</option>
+                            <option value="302">302 (Temporary)</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div>
+                        <Label className="text-xs mb-1">Forward Domain</Label>
+                        <Input
+                          type="text"
+                          value={location.forwardDomain}
+                          onChange={(e) => updateLocation(locIndex, { forwardDomain: e.target.value })}
+                          placeholder="example.com"
+                        />
+                      </div>
+                      <div>
+                        <Label className="text-xs mb-1">Forward Path</Label>
+                        <Input
+                          type="text"
+                          value={location.forwardPath}
+                          onChange={(e) => updateLocation(locIndex, { forwardPath: e.target.value })}
+                          placeholder="/"
+                        />
+                      </div>
+                      <div className="flex items-center space-x-2">
+                        <Checkbox
+                          id={`preservePath-${locIndex}`}
+                          checked={location.preservePath}
+                          onCheckedChange={(checked) =>
+                            updateLocation(locIndex, { preservePath: checked === true })
+                          }
+                        />
+                        <Label htmlFor={`preservePath-${locIndex}`} className="font-normal text-xs">
+                          Preserve Path
+                        </Label>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Headers section */}
+                  <div>
+                    <div className="flex justify-between items-center mb-2">
+                      <Label className="text-xs">Response Headers</Label>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        type="button"
+                        onClick={() => addHeader(locIndex)}
+                      >
+                        <Plus className="mr-2 h-3 w-3" />
+                        Add Header
+                      </Button>
+                    </div>
+                    {Object.entries(location.headers).length > 0 && (
+                      <div className="space-y-2">
+                        {Object.entries(location.headers).map(([key, value], hIdx) => (
+                          <div key={hIdx} className="flex gap-2 items-center">
+                            <Input
+                              type="text"
+                              value={key}
+                              onChange={(e) => updateHeader(locIndex, key, e.target.value, value)}
+                              placeholder="Header name"
+                              className="text-xs flex-1"
+                            />
+                            <Input
+                              type="text"
+                              value={value}
+                              onChange={(e) => updateHeader(locIndex, key, key, e.target.value)}
+                              placeholder="Header value"
+                              className="text-xs flex-1"
+                            />
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              type="button"
+                              onClick={() => removeHeader(locIndex, key)}
+                            >
+                              <Trash2 className="h-3 w-3" />
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Access List */}
+                  {accessLists.length > 0 && (
+                    <div>
+                      <Label className="text-xs mb-1">Access List</Label>
+                      <select
+                        value={location.accessListId ?? ""}
+                        onChange={(e) =>
+                          updateLocation(locIndex, {
+                            accessListId: e.target.value ? Number(e.target.value) : null,
+                          })
+                        }
+                        className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      >
+                        <option value="">None</option>
+                        {accessLists.map((al) => (
+                          <option key={al.id} value={al.id}>
+                            {al.name}
+                          </option>
+                        ))}
+                      </select>
                     </div>
                   )}
                 </div>

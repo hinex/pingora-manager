@@ -566,7 +566,7 @@ function HostRow({
   };
 
   // Type badge
-  const typeBadge = getTypeBadge(host.type);
+  const typeBadge = getHostTypeBadge(host);
 
   // SSL display
   const sslLabel =
@@ -582,8 +582,8 @@ function HostRow({
         ? "secondary"
         : "outline";
 
-  // Type-specific info
-  const typeInfo = getTypeInfo(host);
+  // Info derived from locations/streams
+  const typeInfo = getHostInfo(host);
 
   return (
     <TableRow>
@@ -698,46 +698,45 @@ function HostRow({
 
 // ─── Helpers ────────────────────────────────────────────────
 
-function getTypeBadge(type: string) {
-  switch (type) {
-    case "proxy":
-      return <Badge>Proxy</Badge>;
-    case "static":
-      return <Badge variant="secondary">Static</Badge>;
-    case "redirect":
-      return <Badge variant="outline">Redirect</Badge>;
-    case "stream":
-      return (
-        <Badge
-          variant="secondary"
-          className="bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200"
-        >
-          Stream
-        </Badge>
-      );
-    default:
-      return <Badge variant="outline">{type}</Badge>;
+function getHostTypeBadge(host: HostRecord) {
+  const locationTypes = new Set((host.locations as any[] ?? []).map((l: any) => l.type));
+  const hasStreams = (host.streamPorts as any[] ?? []).length > 0;
+
+  if (locationTypes.size === 0 && hasStreams) {
+    return (
+      <Badge
+        variant="secondary"
+        className="bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200"
+      >
+        Stream
+      </Badge>
+    );
   }
+  if (locationTypes.size === 1 && !hasStreams) {
+    const type = [...locationTypes][0];
+    if (type === "proxy") return <Badge>Proxy</Badge>;
+    if (type === "static") return <Badge variant="secondary">Static</Badge>;
+    if (type === "redirect") return <Badge variant="outline">Redirect</Badge>;
+  }
+  return <Badge variant="outline">Mixed</Badge>;
 }
 
-function getTypeInfo(host: HostRecord) {
-  switch (host.type) {
-    case "proxy": {
-      const upstreams = host.upstreams as Array<{ server: string; port: number; weight: number }>;
-      return `${upstreams.length} upstream${upstreams.length !== 1 ? "s" : ""}`;
+function getHostInfo(host: HostRecord) {
+  const locations = (host.locations as any[] ?? []);
+  const streams = (host.streamPorts as any[] ?? []);
+
+  if (locations.length === 1 && streams.length === 0) {
+    const loc = locations[0];
+    if (loc.type === "proxy" && loc.upstreams?.length > 0) {
+      const u = loc.upstreams[0];
+      return `\u2192 ${u.server}:${u.port}`;
     }
-    case "static": {
-      const dir = host.staticDir ?? "";
-      return dir.length > 30 ? dir.slice(0, 27) + "..." : dir || "-";
-    }
-    case "redirect": {
-      const target = `${host.forwardScheme ?? "https"}://${host.forwardDomain ?? ""}${host.forwardPath ?? "/"}`;
-      return target.length > 40 ? target.slice(0, 37) + "..." : target;
-    }
-    case "stream": {
-      return `${host.incomingPort ?? "-"} ${(host.protocol ?? "tcp").toUpperCase()}`;
-    }
-    default:
-      return "-";
+    if (loc.type === "static") return `Static: ${loc.staticDir || "-"}`;
+    if (loc.type === "redirect") return `\u2192 ${loc.forwardScheme}://${loc.forwardDomain}${loc.forwardPath}`;
   }
+
+  const parts = [];
+  if (locations.length > 0) parts.push(`${locations.length} location${locations.length > 1 ? "s" : ""}`);
+  if (streams.length > 0) parts.push(`${streams.length} stream${streams.length > 1 ? "s" : ""}`);
+  return parts.join(" + ") || "-";
 }

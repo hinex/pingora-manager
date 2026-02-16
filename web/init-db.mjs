@@ -63,6 +63,43 @@ if (existsSync(journalPath)) {
   }
 }
 
+// One-time data migration: enrich existing location objects with new fields
+// Handles proxy hosts that already had locations in the old schema
+const hostsWithLocations = db.query(
+  "SELECT id, locations FROM hosts WHERE locations IS NOT NULL AND locations != '[]' AND locations != 'null'"
+).all();
+
+for (const host of hostsWithLocations) {
+  try {
+    const locations = JSON.parse(host.locations);
+    if (!Array.isArray(locations) || locations.length === 0) continue;
+
+    let changed = false;
+    for (const loc of locations) {
+      if (!("balanceMethod" in loc)) { loc.balanceMethod = "round_robin"; changed = true; }
+      if (!("staticDir" in loc)) { loc.staticDir = ""; changed = true; }
+      if (!("cacheExpires" in loc)) { loc.cacheExpires = ""; changed = true; }
+      if (!("forwardScheme" in loc)) { loc.forwardScheme = "https"; changed = true; }
+      if (!("forwardDomain" in loc)) { loc.forwardDomain = ""; changed = true; }
+      if (!("forwardPath" in loc)) { loc.forwardPath = "/"; changed = true; }
+      if (!("preservePath" in loc)) { loc.preservePath = true; changed = true; }
+      if (!("statusCode" in loc)) { loc.statusCode = 301; changed = true; }
+      if (!("headers" in loc)) { loc.headers = {}; changed = true; }
+      if (!("accessListId" in loc)) { loc.accessListId = null; changed = true; }
+      if (!("upstreams" in loc)) { loc.upstreams = []; changed = true; }
+    }
+
+    if (changed) {
+      db.query("UPDATE hosts SET locations = ? WHERE id = ?").run(
+        JSON.stringify(locations),
+        host.id
+      );
+    }
+  } catch (e) {
+    console.error(`[init-db] Failed to migrate locations for host ${host.id}:`, e.message);
+  }
+}
+
 // Seed default data
 const DEFAULT_ADMIN_EMAIL = "admin@example.com";
 const existingAdmin = db.query(

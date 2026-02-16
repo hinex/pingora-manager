@@ -31,24 +31,12 @@ export function generateAllConfigs() {
 
   const allHosts = db.select().from(hosts).all();
   for (const host of allHosts) {
-    switch (host.type) {
-      case "proxy":
-        generateProxyHostConfig(host);
-        break;
-      case "static":
-        generateStaticHostConfig(host);
-        break;
-      case "redirect":
-        generateRedirectConfig(host);
-        break;
-      case "stream":
-        generateStreamConfig(host);
-        break;
-    }
+    const config = buildHostConfig(host);
+    writeFileSync(join(CONFIGS_DIR, `host-${host.id}.yaml`), stringify(config));
   }
 }
 
-export function buildProxyHostConfig(host: typeof hosts.$inferSelect) {
+export function buildHostConfig(host: typeof hosts.$inferSelect) {
   return {
     id: host.id,
     domains: host.domains,
@@ -59,92 +47,38 @@ export function buildProxyHostConfig(host: typeof hosts.$inferSelect) {
       cert_path: host.sslCertPath,
       key_path: host.sslKeyPath,
     },
-    upstreams: host.upstreams,
-    balance_method: host.balanceMethod,
-    locations: host.locations,
     hsts: host.hsts,
     http2: host.http2,
+    locations: (host.locations ?? []).map((loc: any) => ({
+      path: loc.path,
+      matchType: loc.matchType,
+      type: loc.type,
+      upstreams: loc.upstreams ?? [],
+      balanceMethod: loc.balanceMethod ?? "round_robin",
+      staticDir: loc.staticDir ?? "",
+      cacheExpires: loc.cacheExpires ?? "",
+      forwardScheme: loc.forwardScheme ?? "https",
+      forwardDomain: loc.forwardDomain ?? "",
+      forwardPath: loc.forwardPath ?? "/",
+      preservePath: loc.preservePath ?? true,
+      statusCode: loc.statusCode ?? 301,
+      headers: loc.headers ?? {},
+      access_list_id: loc.accessListId ?? null,
+    })),
+    stream_ports: (host.streamPorts ?? []).map((sp: any) => ({
+      port: sp.port,
+      protocol: sp.protocol ?? "tcp",
+      upstreams: sp.upstreams ?? [],
+      balance_method: sp.balanceMethod ?? "round_robin",
+    })),
     advanced_yaml: host.advancedYaml,
     enabled: host.enabled,
   };
-}
-
-function generateProxyHostConfig(host: typeof hosts.$inferSelect) {
-  const config = buildProxyHostConfig(host);
-  writeFileSync(join(CONFIGS_DIR, `host-${host.id}.yaml`), stringify(config));
-}
-
-export function buildStaticHostConfig(host: typeof hosts.$inferSelect) {
-  return {
-    id: host.id,
-    domains: host.domains,
-    group_id: host.groupId,
-    ssl: {
-      type: host.sslType,
-      force_https: host.sslForceHttps,
-      cert_path: host.sslCertPath,
-      key_path: host.sslKeyPath,
-    },
-    upstreams: [],
-    balance_method: "round_robin",
-    locations: [
-      {
-        path: "/",
-        matchType: "prefix",
-        type: "static",
-        staticDir: host.staticDir,
-        cacheExpires: host.cacheExpires,
-      },
-    ],
-    hsts: host.hsts,
-    http2: host.http2,
-    advanced_yaml: host.advancedYaml,
-    enabled: host.enabled,
-  };
-}
-
-function generateStaticHostConfig(host: typeof hosts.$inferSelect) {
-  const config = buildStaticHostConfig(host);
-  writeFileSync(join(CONFIGS_DIR, `host-${host.id}.yaml`), stringify(config));
-}
-
-export function buildRedirectConfig(host: typeof hosts.$inferSelect) {
-  return {
-    id: host.id,
-    domains: host.domains,
-    forward_scheme: host.forwardScheme,
-    forward_domain: host.forwardDomain,
-    forward_path: host.forwardPath,
-    preserve_path: host.preservePath,
-    status_code: host.statusCode,
-    ssl_type: host.sslType,
-    enabled: host.enabled,
-  };
-}
-
-function generateRedirectConfig(host: typeof hosts.$inferSelect) {
-  const config = buildRedirectConfig(host);
-  writeFileSync(join(CONFIGS_DIR, `redirect-${host.id}.yaml`), stringify(config));
-}
-
-export function buildStreamConfig(host: typeof hosts.$inferSelect) {
-  return {
-    id: host.id,
-    incoming_port: host.incomingPort,
-    protocol: host.protocol,
-    upstreams: host.upstreams,
-    balance_method: host.balanceMethod,
-    enabled: host.enabled,
-  };
-}
-
-function generateStreamConfig(host: typeof hosts.$inferSelect) {
-  const config = buildStreamConfig(host);
-  writeFileSync(join(CONFIGS_DIR, `stream-${host.id}.yaml`), stringify(config));
 }
 
 export function removeHostConfig(id: number) {
   try { unlinkSync(join(CONFIGS_DIR, `host-${id}.yaml`)); } catch {}
+  // Clean up legacy files from before location-centric migration
   try { unlinkSync(join(CONFIGS_DIR, `redirect-${id}.yaml`)); } catch {}
   try { unlinkSync(join(CONFIGS_DIR, `stream-${id}.yaml`)); } catch {}
 }

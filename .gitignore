@@ -40,5 +40,6 @@ Thumbs.db
 *.sqlite-shm
 
 .claude
+CLAUDE.md
 docs/plans
 .worktrees/

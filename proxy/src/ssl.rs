@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 /// Certificate and key file paths for a domain
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // fields read in all_cert_pairs() and tests
 pub struct CertPair {
     pub cert_path: String,
     pub key_path: String,
@@ -41,6 +42,7 @@ impl SslCertManager {
     }
 
     /// Look up the certificate pair for a given SNI hostname
+    #[allow(dead_code)] // public API for TLS listener setup, tested
     pub fn get_cert(&self, sni: &str) -> Option<&CertPair> {
         let sni_lower = sni.to_lowercase();
         self.certs.get(&sni_lower)
@@ -52,6 +54,7 @@ impl SslCertManager {
     }
 
     /// Get all unique certificate pairs for pre-loading
+    #[allow(dead_code)] // public API for TLS cert pre-loading, tested
     pub fn all_cert_pairs(&self) -> Vec<&CertPair> {
         let mut seen = Vec::new();
         let mut result = Vec::new();
@@ -155,13 +158,11 @@ mod tests {
             domains: domains.iter().map(|s| s.to_string()).collect(),
             group_id: None,
             ssl,
-            upstreams: vec![],
-            balance_method: "round_robin".to_string(),
             locations: vec![],
+            stream_ports: vec![],
             hsts: false,
             http2: false,
             enabled,
-            access_list_id: None,
         }
     }
 
@@ -169,8 +170,6 @@ mod tests {
         AppConfig {
             global: make_global(ssl_dir),
             hosts,
-            redirects: vec![],
-            streams: vec![],
             access_lists: std::collections::HashMap::new(),
         }
     }

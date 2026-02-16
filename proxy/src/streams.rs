@@ -1,25 +1,21 @@
-use crate::config::StreamConfig;
+use crate::config::StreamPortConfig;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-/// Start TCP stream proxies for all configured streams.
-/// Each stream listens on its `incoming_port` and forwards to its upstreams.
+/// Start TCP stream proxies for all configured stream ports.
+/// Each stream listens on its `port` and forwards to its upstreams.
 /// Returns a vector of JoinHandles for the spawned tasks.
 pub fn start_stream_proxies(
-    streams: &[StreamConfig],
+    stream_ports: &[StreamPortConfig],
 ) -> Vec<tokio::task::JoinHandle<()>> {
     let mut handles = Vec::new();
 
-    for stream in streams {
-        if !stream.enabled {
-            continue;
-        }
-
-        let stream_config = Arc::new(stream.clone());
+    for sp in stream_ports {
+        let sp_config = Arc::new(sp.clone());
         let handle = tokio::spawn(async move {
-            if let Err(e) = run_stream_proxy(stream_config).await {
-                log::error!("Stream proxy error: {}", e);
+            if let Err(e) = run_stream_proxy(sp_config).await {
+                log::error!("Stream proxy error on port {}: {}", e, e);
             }
         });
         handles.push(handle);
@@ -30,13 +26,12 @@ pub fn start_stream_proxies(
 
 /// Run a single TCP stream proxy that listens on the configured port
 /// and forwards connections to the upstream servers.
-async fn run_stream_proxy(config: Arc<StreamConfig>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let listen_addr = format!("0.0.0.0:{}", config.incoming_port);
+async fn run_stream_proxy(config: Arc<StreamPortConfig>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let listen_addr = format!("0.0.0.0:{}", config.port);
     let listener = TcpListener::bind(&listen_addr).await?;
     log::info!(
-        "Stream proxy {} listening on port {} ({})",
-        config.id,
-        config.incoming_port,
+        "Stream proxy listening on port {} ({})",
+        config.port,
         config.protocol
     );
 
@@ -45,14 +40,14 @@ async fn run_stream_proxy(config: Arc<StreamConfig>) -> Result<(), Box<dyn std::
     loop {
         let (client_stream, client_addr) = listener.accept().await?;
         log::debug!(
-            "Stream {}: new connection from {}",
-            config.id,
+            "Stream port {}: new connection from {}",
+            config.port,
             client_addr
         );
 
         // Simple round-robin upstream selection
         if config.upstreams.is_empty() {
-            log::warn!("Stream {}: no upstreams configured", config.id);
+            log::warn!("Stream port {}: no upstreams configured", config.port);
             continue;
         }
 
@@ -61,10 +56,10 @@ async fn run_stream_proxy(config: Arc<StreamConfig>) -> Result<(), Box<dyn std::
         let upstream = &config.upstreams[idx];
         let upstream_addr = format!("{}:{}", upstream.server, upstream.port);
 
-        let config_id = config.id;
+        let port = config.port;
         tokio::spawn(async move {
             if let Err(e) = proxy_tcp_stream(client_stream, &upstream_addr).await {
-                log::debug!("Stream {}: connection error: {}", config_id, e);
+                log::debug!("Stream port {}: connection error: {}", port, e);
             }
         });
     }

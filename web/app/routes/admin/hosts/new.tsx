@@ -1,7 +1,7 @@
 import type { Route } from "./+types/new";
 import { redirect } from "react-router";
 import { db } from "~/lib/db/connection";
-import { hosts, hostGroups, hostLabels, hostLabelAssignments } from "~/lib/db/schema";
+import { hosts, hostGroups, hostLabels, hostLabelAssignments, accessLists } from "~/lib/db/schema";
 import { HostForm, type HostFormData } from "~/components/host-form/HostForm";
 import { logAudit } from "~/lib/audit/log";
 import { getSessionUser } from "~/lib/auth/session.server";
@@ -15,11 +15,26 @@ export function meta() {
 export async function loader({}: Route.LoaderArgs) {
   const groups = db.select().from(hostGroups).all();
   const labels = db.select().from(hostLabels).all();
-  return { groups, labels };
+  const allAccessLists = db.select().from(accessLists).all();
+  return { groups, labels, accessLists: allAccessLists };
 }
 
 export async function action({ request }: Route.ActionArgs) {
   const formData = await request.formData();
+  const intent = formData.get("intent");
+
+  // Handle inline group creation
+  if (intent === "createGroup") {
+    const name = formData.get("name") as string;
+    if (!name?.trim()) return { error: "Group name is required" };
+    const result = db
+      .insert(hostGroups)
+      .values({ name: name.trim(), createdAt: new Date() })
+      .returning()
+      .get();
+    return { groupId: result.id };
+  }
+
   let data: HostFormData;
   try {
     data = JSON.parse(formData.get("formData") as string);
@@ -28,38 +43,39 @@ export async function action({ request }: Route.ActionArgs) {
   }
 
   // Validation
-  if (data.type !== "stream" && (!data.domains || data.domains.length === 0)) {
-    return { error: "At least one domain is required" };
+  const hasHttpLocations = data.locations.length > 0;
+  if (hasHttpLocations && (!data.domains || data.domains.length === 0)) {
+    return { error: "At least one domain is required for HTTP locations" };
   }
 
-  if (data.type === "proxy") {
-    if (data.upstreams.length === 0 && data.locations.length === 0) {
-      return { error: "At least one upstream or location is required" };
+  if (data.locations.length === 0 && data.streamPorts.length === 0) {
+    return { error: "At least one location or stream port is required" };
+  }
+
+  for (const loc of data.locations) {
+    if (loc.type === "proxy") {
+      if (!loc.upstreams || loc.upstreams.length === 0) {
+        return { error: `Proxy location "${loc.path}" needs at least one upstream` };
+      }
+      for (const u of loc.upstreams) {
+        if (!u.server?.trim()) return { error: "All upstreams must have a server address" };
+        if (!u.port || u.port < 1 || u.port > 65535) return { error: "Upstream port must be 1-65535" };
+      }
     }
-    for (const u of data.upstreams) {
-      if (!u.server?.trim()) return { error: "All upstreams must have a server address" };
-      if (!u.port || u.port < 1 || u.port > 65535) return { error: "Upstream port must be between 1 and 65535" };
+    if (loc.type === "static") {
+      if (!loc.staticDir?.trim()) return { error: `Static location "${loc.path}" needs a directory path` };
+    }
+    if (loc.type === "redirect") {
+      if (!loc.forwardDomain?.trim()) return { error: `Redirect location "${loc.path}" needs a forward domain` };
     }
   }
 
-  if (data.type === "static") {
-    if (!data.staticDir?.trim()) return { error: "Static directory path is required" };
-  }
-
-  if (data.type === "redirect") {
-    if (!data.forwardDomain?.trim()) return { error: "Forward domain is required" };
-  }
-
-  if (data.type === "stream") {
-    if (!data.incomingPort || data.incomingPort < 1 || data.incomingPort > 65535) {
-      return { error: "Incoming port must be between 1 and 65535" };
+  for (const sp of data.streamPorts) {
+    if (!sp.port || sp.port < 1 || sp.port > 65535) {
+      return { error: "Stream port must be 1-65535" };
     }
-    if (!data.upstreams || data.upstreams.length === 0) {
-      return { error: "At least one upstream is required" };
-    }
-    for (const u of data.upstreams) {
-      if (!u.server?.trim()) return { error: "All upstreams must have a server address" };
-      if (!u.port || u.port < 1 || u.port > 65535) return { error: "Upstream port must be between 1 and 65535" };
+    if (!sp.upstreams || sp.upstreams.length === 0) {
+      return { error: `Stream port ${sp.port} needs at least one upstream` };
     }
   }
 
@@ -69,28 +85,17 @@ export async function action({ request }: Route.ActionArgs) {
 
   const result = db.insert(hosts)
     .values({
-      type: data.type,
-      domains: data.type === "stream" ? [] : data.domains,
+      domains: data.domains,
       groupId: data.groupId,
       enabled: data.enabled,
       sslType: data.sslType as any,
       sslForceHttps: data.sslForceHttps,
       sslCertPath: data.sslCertPath || null,
       sslKeyPath: data.sslKeyPath || null,
-      upstreams: data.upstreams,
-      balanceMethod: data.balanceMethod as any,
-      locations: data.locations as any,
       hsts: data.hsts,
       http2: data.http2,
-      staticDir: data.staticDir || null,
-      cacheExpires: data.cacheExpires || null,
-      forwardScheme: data.forwardScheme || null,
-      forwardDomain: data.forwardDomain || null,
-      forwardPath: data.forwardPath || "/",
-      preservePath: data.preservePath,
-      statusCode: data.statusCode || 301,
-      incomingPort: data.incomingPort || null,
-      protocol: data.protocol as any || null,
+      locations: data.locations as any,
+      streamPorts: data.streamPorts as any,
       webhookUrl: data.webhookUrl || null,
       advancedYaml: data.advancedYaml || null,
       createdAt: new Date(),
@@ -114,7 +119,7 @@ export async function action({ request }: Route.ActionArgs) {
     action: "create",
     entity: "host",
     entityId: result.id,
-    details: { type: data.type, domains: data.domains },
+    details: { domains: data.domains },
     ipAddress: request.headers.get("x-forwarded-for") || request.headers.get("x-real-ip") || "unknown",
   });
 
@@ -125,14 +130,19 @@ export async function action({ request }: Route.ActionArgs) {
 }
 
 export default function NewHost({ loaderData }: Route.ComponentProps) {
-  const { groups, labels } = loaderData;
+  const { groups, labels, accessLists: allAccessLists } = loaderData;
 
   return (
     <div>
       <div className="flex items-center min-h-10 mb-6">
         <h1 className="text-2xl font-bold">Add Host</h1>
       </div>
-      <HostForm groups={groups} labels={labels} submitLabel="Create Host" />
+      <HostForm
+        groups={groups}
+        labels={labels}
+        accessLists={allAccessLists}
+        submitLabel="Create Host"
+      />
     </div>
   );
 }

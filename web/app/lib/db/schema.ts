@@ -31,19 +31,16 @@ export const hostGroups = sqliteTable("host_groups", {
     .$defaultFn(() => new Date()),
 });
 
-// ─── Hosts (unified) ────────────────────────────────────
+// ─── Hosts (location-centric) ───────────────────────────
 export const hosts = sqliteTable("hosts", {
   id: integer("id").primaryKey({ autoIncrement: true }),
-  type: text("type", { enum: ["proxy", "static", "redirect", "stream"] })
-    .notNull()
-    .default("proxy"),
   groupId: integer("group_id").references(() => hostGroups.id, { onDelete: "set null" }),
   domains: text("domains", { mode: "json" })
     .$type<string[]>()
     .notNull(),
   enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
 
-  // SSL (shared by proxy, static, redirect)
+  // SSL
   sslType: text("ssl_type", { enum: ["none", "letsencrypt", "custom"] })
     .notNull()
     .default("none"),
@@ -52,47 +49,39 @@ export const hosts = sqliteTable("hosts", {
     .default(false),
   sslCertPath: text("ssl_cert_path"),
   sslKeyPath: text("ssl_key_path"),
+  hsts: integer("hsts", { mode: "boolean" }).notNull().default(true),
+  http2: integer("http2", { mode: "boolean" }).notNull().default(true),
 
-  // Proxy fields
-  upstreams: text("upstreams", { mode: "json" })
-    .$type<Array<{ server: string; port: number; weight: number }>>()
-    .notNull()
-    .default([]),
-  balanceMethod: text("balance_method", {
-    enum: ["round_robin", "weighted", "least_conn", "ip_hash", "random"],
-  })
-    .notNull()
-    .default("round_robin"),
+  // Locations (all routing logic lives here)
   locations: text("locations", { mode: "json" })
     .$type<Array<{
       path: string;
       matchType: "prefix" | "exact" | "regex";
-      type: "proxy" | "static";
-      upstreams?: Array<{ server: string; port: number; weight: number }>;
-      staticDir?: string;
-      cacheExpires?: string;
-      accessListId?: number;
-      headers?: Record<string, string>;
-      basicAuth?: { enabled: boolean; realm: string };
+      type: "proxy" | "static" | "redirect";
+      upstreams: Array<{ server: string; port: number; weight: number }>;
+      balanceMethod: string;
+      staticDir: string;
+      cacheExpires: string;
+      forwardScheme: string;
+      forwardDomain: string;
+      forwardPath: string;
+      preservePath: boolean;
+      statusCode: number;
+      headers: Record<string, string>;
+      accessListId: number | null;
+    }>>()
+    .notNull()
+    .default([]),
+
+  // Stream ports (TCP/UDP forwarding, separate from HTTP locations)
+  streamPorts: text("stream_ports", { mode: "json" })
+    .$type<Array<{
+      port: number;
+      protocol: "tcp" | "udp";
+      upstreams: Array<{ server: string; port: number; weight: number }>;
+      balanceMethod: string;
     }>>()
     .default([]),
-  hsts: integer("hsts", { mode: "boolean" }).notNull().default(true),
-  http2: integer("http2", { mode: "boolean" }).notNull().default(true),
-
-  // Static fields
-  staticDir: text("static_dir"),
-  cacheExpires: text("cache_expires"),
-
-  // Redirect fields
-  forwardScheme: text("forward_scheme"),
-  forwardDomain: text("forward_domain"),
-  forwardPath: text("forward_path").default("/"),
-  preservePath: integer("preserve_path", { mode: "boolean" }).notNull().default(true),
-  statusCode: integer("status_code").default(301),
-
-  // Stream fields
-  incomingPort: integer("incoming_port"),
-  protocol: text("protocol", { enum: ["tcp", "udp"] }),
 
   // Common
   webhookUrl: text("webhook_url"),

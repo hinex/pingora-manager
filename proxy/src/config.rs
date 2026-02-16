@@ -12,6 +12,7 @@ pub struct GlobalConfig {
     #[serde(default = "error_pages_dir")]
     pub error_pages_dir: String,
     #[serde(default = "logs_dir")]
+    #[allow(dead_code)] // deserialized for schema completeness
     pub logs_dir: String,
     #[serde(default = "ssl_dir")]
     pub ssl_dir: String,
@@ -50,7 +51,7 @@ fn default_admin_port() -> u16 {
     81
 }
 
-/// Host (proxy host) configuration from host-{id}.yaml
+/// Host configuration from host-{id}.yaml (unified location-centric model)
 #[derive(Debug, Clone, Deserialize)]
 pub struct HostConfig {
     pub id: u64,
@@ -59,19 +60,16 @@ pub struct HostConfig {
     pub group_id: Option<u64>,
     pub ssl: Option<SslConfig>,
     #[serde(default)]
-    pub upstreams: Vec<UpstreamConfig>,
-    #[serde(default = "default_balance_method")]
-    pub balance_method: String,
-    #[serde(default)]
     pub locations: Vec<LocationConfig>,
+    #[serde(default)]
+    pub stream_ports: Vec<StreamPortConfig>,
     #[serde(default)]
     pub hsts: bool,
     #[serde(default)]
+    #[allow(dead_code)] // deserialized for schema completeness
     pub http2: bool,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
-    #[serde(alias = "accessListId")]
-    pub access_list_id: Option<u64>,
 }
 
 fn default_balance_method() -> String {
@@ -111,26 +109,40 @@ fn default_weight() -> usize {
 }
 
 /// Location (route) configuration within a host.
-/// The admin UI generates camelCase field names (matchType, staticDir, cacheExpires, accessListId),
+/// The admin UI generates camelCase field names (matchType, staticDir, etc.),
 /// so we use serde `alias` to accept both snake_case and camelCase.
 #[derive(Debug, Clone, Deserialize)]
 pub struct LocationConfig {
     pub path: String,
     #[serde(alias = "matchType", default = "default_match_type")]
     pub match_type: String,
-    /// Location type: "proxy" or "static"
+    /// Location type: "proxy", "static", or "redirect"
     #[serde(alias = "type", default = "default_location_type")]
     pub location_type: Option<String>,
     #[serde(default)]
     pub upstreams: Vec<UpstreamConfig>,
+    #[serde(alias = "balanceMethod", default = "default_balance_method")]
+    pub balance_method: String,
     #[serde(alias = "staticDir")]
     pub static_dir: Option<String>,
     #[serde(alias = "cacheExpires")]
     pub cache_expires: Option<String>,
-    #[serde(alias = "accessListId")]
-    pub access_list_id: Option<u64>,
+    // Redirect fields
+    #[serde(alias = "forwardScheme")]
+    pub forward_scheme: Option<String>,
+    #[serde(alias = "forwardDomain")]
+    pub forward_domain: Option<String>,
+    #[serde(alias = "forwardPath")]
+    pub forward_path: Option<String>,
+    #[serde(alias = "preservePath", default)]
+    pub preserve_path: bool,
+    #[serde(alias = "statusCode")]
+    pub status_code: Option<u16>,
+    // Common
     #[serde(default)]
-    pub balance_method: Option<String>,
+    pub headers: HashMap<String, String>,
+    #[serde(alias = "accessListId", alias = "access_list_id")]
+    pub access_list_id: Option<u64>,
 }
 
 fn default_match_type() -> String {
@@ -141,45 +153,16 @@ fn default_location_type() -> Option<String> {
     Some("proxy".to_string())
 }
 
-/// Redirect configuration from redirect-{id}.yaml
+/// Stream port configuration (TCP/UDP forwarding) within a host
 #[derive(Debug, Clone, Deserialize)]
-pub struct RedirectConfig {
-    pub id: u64,
-    #[serde(default)]
-    pub domains: Vec<String>,
-    pub forward_scheme: String,
-    pub forward_domain: String,
-    #[serde(default = "default_forward_path")]
-    pub forward_path: String,
-    #[serde(default)]
-    pub preserve_path: bool,
-    #[serde(default = "default_status_code")]
-    pub status_code: u16,
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
-}
-
-fn default_forward_path() -> String {
-    "/".to_string()
-}
-
-fn default_status_code() -> u16 {
-    301
-}
-
-/// TCP stream proxy configuration from stream-{id}.yaml
-#[derive(Debug, Clone, Deserialize)]
-pub struct StreamConfig {
-    pub id: u64,
-    pub incoming_port: u16,
+pub struct StreamPortConfig {
+    pub port: u16,
     #[serde(default = "default_stream_protocol")]
     pub protocol: String,
     #[serde(default)]
     pub upstreams: Vec<UpstreamConfig>,
     #[serde(default = "default_balance_method")]
     pub balance_method: String,
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
 }
 
 fn default_stream_protocol() -> String {
@@ -191,6 +174,7 @@ fn default_stream_protocol() -> String {
 pub struct AccessListConfig {
     pub id: u64,
     #[serde(default)]
+    #[allow(dead_code)] // deserialized for schema completeness
     pub name: String,
     #[serde(default = "default_satisfy")]
     pub satisfy: String,
@@ -228,8 +212,6 @@ pub struct AccessListAuthEntry {
 pub struct AppConfig {
     pub global: GlobalConfig,
     pub hosts: Vec<HostConfig>,
-    pub redirects: Vec<RedirectConfig>,
-    pub streams: Vec<StreamConfig>,
     pub access_lists: HashMap<u64, AccessListConfig>,
 }
 
@@ -253,12 +235,6 @@ impl AppConfig {
         // Load host configs
         let hosts = Self::load_glob(configs_dir, "host-*.yaml")?;
 
-        // Load redirect configs
-        let redirects = Self::load_glob(configs_dir, "redirect-*.yaml")?;
-
-        // Load stream configs
-        let streams = Self::load_glob(configs_dir, "stream-*.yaml")?;
-
         // Load access lists
         let access_lists_path = dir.join("access-lists.yaml");
         let access_lists_vec: Vec<AccessListConfig> = if access_lists_path.exists() {
@@ -273,13 +249,12 @@ impl AppConfig {
         Ok(AppConfig {
             global,
             hosts,
-            redirects,
-            streams,
             access_lists,
         })
     }
 
     /// Reload all configuration (re-reads from disk)
+    #[allow(dead_code)] // used in tests; runtime reload uses load() + SharedState::build()
     pub fn reload(&mut self, configs_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
         let new_config = Self::load(configs_dir)?;
         *self = new_config;
@@ -415,11 +390,10 @@ mod tests {
 
     #[test]
     fn test_host_config_minimal() {
-        let yaml = "id: 1\ndomains: ['example.com']\nupstreams:\n  - server: '127.0.0.1'\n    port: 8080";
+        let yaml = "id: 1\ndomains: ['example.com']";
         let cfg: HostConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(cfg.id, 1);
         assert!(cfg.enabled); // default true
-        assert_eq!(cfg.balance_method, "round_robin"); // default
     }
 
     #[test]
@@ -427,14 +401,22 @@ mod tests {
         let yaml = "id: 42";
         let cfg: HostConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(cfg.domains.is_empty());
-        assert!(cfg.upstreams.is_empty());
         assert!(cfg.locations.is_empty());
+        assert!(cfg.stream_ports.is_empty());
         assert!(!cfg.hsts);
         assert!(!cfg.http2);
         assert!(cfg.enabled);
         assert!(cfg.ssl.is_none());
         assert!(cfg.group_id.is_none());
-        assert!(cfg.access_list_id.is_none());
+    }
+
+    #[test]
+    fn test_host_config_with_stream_ports() {
+        let yaml = "id: 1\nstream_ports:\n  - port: 3306\n    protocol: tcp\n    upstreams:\n      - server: '10.0.0.1'\n        port: 3306";
+        let cfg: HostConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.stream_ports.len(), 1);
+        assert_eq!(cfg.stream_ports[0].port, 3306);
+        assert_eq!(cfg.stream_ports[0].protocol, "tcp");
     }
 
     #[test]
@@ -540,16 +522,51 @@ mod tests {
         let cfg: LocationConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(cfg.match_type, "prefix"); // default
         assert_eq!(cfg.location_type, Some("proxy".to_string())); // default
+        assert_eq!(cfg.balance_method, "round_robin"); // default
+        assert!(cfg.headers.is_empty());
+        assert!(cfg.forward_scheme.is_none());
+        assert!(cfg.forward_domain.is_none());
+        assert!(cfg.status_code.is_none());
+        assert!(!cfg.preserve_path);
     }
 
     #[test]
     fn test_location_config_camel_case_aliases() {
-        let yaml = "path: '/api'\nmatchType: regex\nstaticDir: '/var/www'\ncacheExpires: '30d'\naccessListId: 5";
+        let yaml = "path: '/api'\nmatchType: regex\nstaticDir: '/var/www'\ncacheExpires: '30d'\naccessListId: 5\nbalanceMethod: ip_hash";
         let cfg: LocationConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(cfg.match_type, "regex");
         assert_eq!(cfg.static_dir.unwrap(), "/var/www");
         assert_eq!(cfg.cache_expires.unwrap(), "30d");
         assert_eq!(cfg.access_list_id.unwrap(), 5);
+        assert_eq!(cfg.balance_method, "ip_hash");
+    }
+
+    #[test]
+    fn test_location_config_redirect_fields() {
+        let yaml = "path: '/old'\ntype: redirect\nforwardScheme: https\nforwardDomain: new.com\nforwardPath: /new\npreservePath: true\nstatusCode: 302";
+        let cfg: LocationConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.location_type, Some("redirect".to_string()));
+        assert_eq!(cfg.forward_scheme.unwrap(), "https");
+        assert_eq!(cfg.forward_domain.unwrap(), "new.com");
+        assert_eq!(cfg.forward_path.unwrap(), "/new");
+        assert!(cfg.preserve_path);
+        assert_eq!(cfg.status_code.unwrap(), 302);
+    }
+
+    #[test]
+    fn test_location_config_headers() {
+        let yaml = "path: '/'\nheaders:\n  X-Custom: value\n  Cache-Control: no-cache";
+        let cfg: LocationConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.headers.len(), 2);
+        assert_eq!(cfg.headers.get("X-Custom").unwrap(), "value");
+        assert_eq!(cfg.headers.get("Cache-Control").unwrap(), "no-cache");
+    }
+
+    #[test]
+    fn test_location_config_access_list_id_snake_case() {
+        let yaml = "path: '/'\naccess_list_id: 7";
+        let cfg: LocationConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.access_list_id.unwrap(), 7);
     }
 
     #[test]
@@ -579,62 +596,32 @@ mod tests {
         assert!(cfg.force_https);
     }
 
-    // ─── RedirectConfig deserialization ──────────────────────
+    // ─── StreamPortConfig deserialization ──────────────────────
 
     #[test]
-    fn test_redirect_config_minimal() {
-        let yaml = "id: 1\nforward_scheme: https\nforward_domain: new.com";
-        let cfg: RedirectConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(cfg.forward_path, "/"); // default
-        assert_eq!(cfg.status_code, 301); // default
-        assert!(cfg.enabled); // default
-        assert!(!cfg.preserve_path);
-    }
-
-    #[test]
-    fn test_redirect_config_missing_forward_scheme_fails() {
-        let yaml = "id: 1\nforward_domain: new.com";
-        let result = serde_yaml::from_str::<RedirectConfig>(yaml);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_redirect_config_garbage_scheme() {
-        let yaml = "id: 1\nforward_scheme: 'javascript:alert(1)'\nforward_domain: evil.com";
-        let cfg: RedirectConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(cfg.forward_scheme, "javascript:alert(1)"); // stored as-is
-    }
-
-    #[test]
-    fn test_redirect_config_invalid_status_code_large() {
-        let yaml = "id: 1\nforward_scheme: https\nforward_domain: x.com\nstatus_code: 99999";
-        let result = serde_yaml::from_str::<RedirectConfig>(yaml);
-        assert!(result.is_err()); // u16 overflow
-    }
-
-    #[test]
-    fn test_redirect_config_status_code_zero() {
-        let yaml = "id: 1\nforward_scheme: https\nforward_domain: x.com\nstatus_code: 0";
-        let cfg: RedirectConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(cfg.status_code, 0); // no validation in serde
-    }
-
-    // ─── StreamConfig deserialization ────────────────────────
-
-    #[test]
-    fn test_stream_config_defaults() {
-        let yaml = "id: 1\nincoming_port: 3306";
-        let cfg: StreamConfig = serde_yaml::from_str(yaml).unwrap();
+    fn test_stream_port_config_defaults() {
+        let yaml = "port: 3306";
+        let cfg: StreamPortConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(cfg.protocol, "tcp");
         assert_eq!(cfg.balance_method, "round_robin");
-        assert!(cfg.enabled);
         assert!(cfg.upstreams.is_empty());
     }
 
     #[test]
-    fn test_stream_config_missing_port_fails() {
-        let yaml = "id: 1";
-        let result = serde_yaml::from_str::<StreamConfig>(yaml);
+    fn test_stream_port_config_full() {
+        let yaml = "port: 5432\nprotocol: tcp\nbalance_method: ip_hash\nupstreams:\n  - server: '10.0.0.1'\n    port: 5432\n    weight: 2";
+        let cfg: StreamPortConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.port, 5432);
+        assert_eq!(cfg.protocol, "tcp");
+        assert_eq!(cfg.balance_method, "ip_hash");
+        assert_eq!(cfg.upstreams.len(), 1);
+        assert_eq!(cfg.upstreams[0].weight, 2);
+    }
+
+    #[test]
+    fn test_stream_port_config_missing_port_fails() {
+        let yaml = "protocol: tcp";
+        let result = serde_yaml::from_str::<StreamPortConfig>(yaml);
         assert!(result.is_err());
     }
 
@@ -696,8 +683,6 @@ mod tests {
         assert_eq!(cfg.global.listen.http, 8080);
         assert_eq!(cfg.global.admin_upstream, "127.0.0.1:4000");
         assert!(cfg.hosts.is_empty());
-        assert!(cfg.redirects.is_empty());
-        assert!(cfg.streams.is_empty());
         assert!(cfg.access_lists.is_empty());
 
         let _ = fs::remove_dir_all(&dir);
@@ -727,7 +712,7 @@ mod tests {
         fs::write(dir.join("global.yaml"), global_yaml).unwrap();
 
         // Valid host
-        fs::write(dir.join("host-1.yaml"), "id: 1\ndomains: ['good.com']\nupstreams:\n  - server: '127.0.0.1'\n    port: 8080").unwrap();
+        fs::write(dir.join("host-1.yaml"), "id: 1\ndomains: ['good.com']").unwrap();
         // Corrupted host
         fs::write(dir.join("host-2.yaml"), "{{TOTAL GARBAGE}}").unwrap();
 
@@ -778,22 +763,21 @@ mod tests {
     }
 
     #[test]
-    fn test_load_redirect_and_stream() {
-        let dir = std::env::temp_dir().join("pingora-test-config-redir-stream");
+    fn test_load_host_with_stream_ports() {
+        let dir = std::env::temp_dir().join("pingora-test-config-stream-ports");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
 
         let global_yaml = "listen:\n  http: 80\n  https: 443\n  admin: 81\nadmin_upstream: 'x'";
         fs::write(dir.join("global.yaml"), global_yaml).unwrap();
 
-        fs::write(dir.join("redirect-1.yaml"), "id: 1\ndomains: ['old.com']\nforward_scheme: https\nforward_domain: new.com").unwrap();
-        fs::write(dir.join("stream-1.yaml"), "id: 1\nincoming_port: 3306\nupstreams:\n  - server: '10.0.0.1'\n    port: 3306").unwrap();
+        let host_yaml = "id: 1\ndomains: []\nstream_ports:\n  - port: 3306\n    protocol: tcp\n    upstreams:\n      - server: '10.0.0.1'\n        port: 3306";
+        fs::write(dir.join("host-1.yaml"), host_yaml).unwrap();
 
         let cfg = AppConfig::load(dir.to_str().unwrap()).unwrap();
-        assert_eq!(cfg.redirects.len(), 1);
-        assert_eq!(cfg.redirects[0].forward_domain, "new.com");
-        assert_eq!(cfg.streams.len(), 1);
-        assert_eq!(cfg.streams[0].incoming_port, 3306);
+        assert_eq!(cfg.hosts.len(), 1);
+        assert_eq!(cfg.hosts[0].stream_ports.len(), 1);
+        assert_eq!(cfg.hosts[0].stream_ports[0].port, 3306);
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -825,7 +809,7 @@ mod tests {
     #[test]
     fn test_yaml_anchor_alias_attack() {
         // YAML anchor/alias abuse
-        let yaml = "id: 1\ndomains: &bomb ['a.com']\nupstreams: []";
+        let yaml = "id: 1\ndomains: &bomb ['a.com']";
         let result = serde_yaml::from_str::<HostConfig>(yaml);
         assert!(result.is_ok());
     }
@@ -833,14 +817,14 @@ mod tests {
     #[test]
     fn test_yaml_very_long_string_value() {
         let long = "a".repeat(100_000);
-        let yaml = format!("id: 1\ndomains: ['{}']\nupstreams: []", long);
+        let yaml = format!("id: 1\ndomains: ['{}']", long);
         let cfg: HostConfig = serde_yaml::from_str(&yaml).unwrap();
         assert_eq!(cfg.domains[0].len(), 100_000);
     }
 
     #[test]
     fn test_host_config_null_values() {
-        let yaml = "id: 1\ndomains: null\nupstreams: null";
+        let yaml = "id: 1\ndomains: null\nlocations: null";
         // Vec with serde(default) treats null as default (empty vec)
         let result = serde_yaml::from_str::<HostConfig>(yaml);
         // serde_yaml may or may not accept null for Vec<> - check behavior
