@@ -18,6 +18,7 @@ describe("buildHostConfig (unified)", () => {
       sslKeyPath: "/path/key.pem",
       hsts: true,
       http2: true,
+      compression: true,
       locations: [
         {
           path: "/",
@@ -44,6 +45,7 @@ describe("buildHostConfig (unified)", () => {
     expect(cfg.id).toBe(1);
     expect(cfg.domains).toEqual(["example.com"]);
     expect(cfg.ssl.type).toBe("letsencrypt");
+    expect(cfg.compression).toBe(true);
     expect(cfg.locations).toHaveLength(1);
     expect(cfg.locations[0].type).toBe("proxy");
     expect(cfg.locations[0].upstreams).toHaveLength(1);

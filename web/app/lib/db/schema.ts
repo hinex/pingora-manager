@@ -51,6 +51,7 @@ export const hosts = sqliteTable("hosts", {
   sslKeyPath: text("ssl_key_path"),
   hsts: integer("hsts", { mode: "boolean" }).notNull().default(true),
   http2: integer("http2", { mode: "boolean" }).notNull().default(true),
+  compression: integer("compression", { mode: "boolean" }).notNull().default(true),
 
   // Locations (all routing logic lives here)
   locations: text("locations", { mode: "json" })

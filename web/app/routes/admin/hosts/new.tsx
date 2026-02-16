@@ -97,6 +97,7 @@ export async function action({ request }: Route.ActionArgs) {
       sslKeyPath: data.sslKeyPath || null,
       hsts: data.hsts,
       http2: data.http2,
+      compression: data.compression,
       locations: data.locations as any,
       streamPorts: data.streamPorts as any,
       webhookUrl: data.webhookUrl || null,

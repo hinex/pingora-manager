@@ -53,6 +53,7 @@ export interface HostFormData {
   sslForceHttps: boolean;
   hsts: boolean;
   http2: boolean;
+  compression: boolean;
 
   // Locations (all routing)
   locations: LocationFormData[];
@@ -102,6 +103,7 @@ const defaultFormData: HostFormData = {
   sslForceHttps: false,
   hsts: true,
   http2: true,
+  compression: true,
 
   locations: [{ ...defaultLocation }],
   streamPorts: [],
@@ -373,6 +375,12 @@ export function HostForm({
                 <div className="flex items-center gap-3">
                   <Switch checked={formData.enabled} onCheckedChange={(enabled) => update({ enabled })} />
                   <Label>Enabled</Label>
+                </div>
+
+                {/* Compression */}
+                <div className="flex items-center gap-3">
+                  <Switch checked={formData.compression} onCheckedChange={(compression) => update({ compression })} />
+                  <Label>Response Compression (gzip + brotli)</Label>
                 </div>
               </div>
             </TabsContent>

@@ -49,6 +49,7 @@ export function buildHostConfig(host: typeof hosts.$inferSelect) {
     },
     hsts: host.hsts,
     http2: host.http2,
+    compression: host.compression,
     locations: (host.locations ?? []).map((loc: any) => ({
       path: loc.path,
       matchType: loc.matchType,
