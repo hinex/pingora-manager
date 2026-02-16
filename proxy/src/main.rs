@@ -40,8 +40,8 @@ struct SharedState {
     error_pages_dir: Arc<str>,
     /// Cached default_page path (Arc<str>)
     default_page: Arc<str>,
-    /// Cached logs_dir (Arc<str>)
-    logs_dir: Arc<str>,
+    /// Pre-formatted per-host log file paths: host_id → (access_log_path, error_log_path)
+    host_log_paths: std::collections::HashMap<u64, (Arc<str>, Arc<str>)>,
     log_sender: log_writer::LogSender,
 }
 
@@ -81,10 +81,17 @@ impl SharedState {
             }
         }
 
+        let mut host_log_paths = std::collections::HashMap::new();
+        for host in &config.hosts {
+            if !host.enabled { continue; }
+            let access = Arc::from(format!("{}/proxy-host-{}_access.log", config.global.logs_dir, host.id).as_str());
+            let error = Arc::from(format!("{}/proxy-host-{}_error.log", config.global.logs_dir, host.id).as_str());
+            host_log_paths.insert(host.id, (access, error));
+        }
+
         let admin_upstream: Arc<str> = config.global.admin_upstream.as_str().into();
         let error_pages_dir: Arc<str> = config.global.error_pages_dir.as_str().into();
         let default_page: Arc<str> = config.global.default_page.as_str().into();
-        let logs_dir: Arc<str> = config.global.logs_dir.as_str().into();
 
         SharedState {
             config,
@@ -95,7 +102,7 @@ impl SharedState {
             admin_upstream,
             error_pages_dir,
             default_page,
-            logs_dir,
+            host_log_paths,
             log_sender,
         }
     }
@@ -185,14 +192,16 @@ pub struct ProxyCtx {
     custom_headers: Vec<(http::header::HeaderName, Arc<str>)>,
     /// Cached error_pages_dir for fail_to_proxy
     error_pages_dir: Arc<str>,
-    /// Logs directory for per-host file logging
-    logs_dir: Arc<str>,
+    /// Pre-formatted access log path for this host (None = skip per-host logging)
+    access_log_path: Option<Arc<str>>,
+    /// Pre-formatted error log path for this host (None = skip per-host logging)
+    error_log_path: Option<Arc<str>>,
     /// Async log sender (non-blocking channel send instead of file I/O)
     log_sender: log_writer::LogSender,
 }
 
 impl ProxyCtx {
-    fn new(error_pages_dir: Arc<str>, logs_dir: Arc<str>, log_sender: log_writer::LogSender) -> Self {
+    fn new(error_pages_dir: Arc<str>, log_sender: log_writer::LogSender) -> Self {
         ProxyCtx {
             upstream_addr: None,
             upstream_tls: false,
@@ -202,8 +211,19 @@ impl ProxyCtx {
             hsts: false,
             custom_headers: Vec::new(),
             error_pages_dir,
-            logs_dir,
+            access_log_path: None,
+            error_log_path: None,
             log_sender,
+        }
+    }
+
+    /// Populate pre-cached log paths from shared state for the given host_id
+    fn populate_log_paths(&mut self, host_id: Option<u64>, state: &SharedState) {
+        if let Some(id) = host_id {
+            if let Some((access, error)) = state.host_log_paths.get(&id) {
+                self.access_log_path = Some(Arc::clone(access));
+                self.error_log_path = Some(Arc::clone(error));
+            }
         }
     }
 }
@@ -405,7 +425,6 @@ impl ProxyHttp for ProxyApp {
         let state = self.state.load();
         ProxyCtx::new(
             Arc::clone(&state.error_pages_dir),
-            Arc::clone(&state.logs_dir),
             state.log_sender.clone(),
         )
     }
@@ -458,6 +477,7 @@ impl ProxyHttp for ProxyApp {
                 ctx.group_id = group_id;
                 ctx.hsts = hsts;
                 ctx.custom_headers = custom_headers;
+                ctx.populate_log_paths(host_id, &self.state.load());
                 Ok(false)
             }
 
@@ -493,6 +513,9 @@ impl ProxyHttp for ProxyApp {
                 error_pages_dir,
                 custom_headers,
             } => {
+                ctx.host_id = host_id;
+                ctx.group_id = group_id;
+                ctx.populate_log_paths(host_id, &self.state.load());
                 let path_owned = path.to_string();
                 let ims: Option<&str> = session
                     .req_header()
@@ -545,6 +568,9 @@ impl ProxyHttp for ProxyApp {
                 error_pages_dir,
                 custom_headers,
             } => {
+                ctx.host_id = host_id;
+                ctx.group_id = group_id;
+                ctx.populate_log_paths(host_id, &self.state.load());
                 let ims: Option<&str> = session
                     .req_header()
                     .headers
@@ -614,6 +640,9 @@ impl ProxyHttp for ProxyApp {
                 host_id,
                 group_id,
             } => {
+                ctx.host_id = host_id;
+                ctx.group_id = group_id;
+                ctx.populate_log_paths(host_id, &self.state.load());
                 let err_resp = error_pages::serve_error_page(
                     &error_pages_dir,
                     403,
@@ -676,6 +705,9 @@ impl ProxyHttp for ProxyApp {
                 host_id,
                 group_id,
             } => {
+                ctx.host_id = host_id;
+                ctx.group_id = group_id;
+                ctx.populate_log_paths(host_id, &self.state.load());
                 let err_resp =
                     error_pages::serve_error_page(&error_pages_dir, 502, host_id, group_id);
                 session
@@ -841,27 +873,31 @@ impl ProxyHttp for ProxyApp {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("-");
 
-        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
-
         if let Some(err) = e {
             log::error!("{} {} {} {} - error: {}", method, host, path, status, err);
 
-            let log_file = match ctx.host_id {
-                Some(id) => format!("{}/proxy-host-{}_error.log", ctx.logs_dir, id),
-                None => format!("{}/proxy_general.log", ctx.logs_dir),
-            };
-            let line = format!("{} {} {} {} {} - error: {}\n", now, method, host, path, status, err);
-            let _ = ctx.log_sender.send(log_writer::LogEntry { file_path: log_file, line });
+            // Only write per-host error log if we have a cached path
+            if let Some(ref error_path) = ctx.error_log_path {
+                let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
+                let line = format!("{} {} {} {} {} - error: {}\n", now, method, host, path, status, err);
+                let _ = ctx.log_sender.send(log_writer::LogEntry {
+                    file_path: error_path.to_string(),
+                    line,
+                });
+            }
         } else {
             log::info!("{} {} {} {}", method, host, path, status);
         }
 
-        let log_file = match ctx.host_id {
-            Some(id) => format!("{}/proxy-host-{}_access.log", ctx.logs_dir, id),
-            None => format!("{}/proxy_general.log", ctx.logs_dir),
-        };
-        let line = format!("{} {} {} {} {}\n", now, method, host, path, status);
-        let _ = ctx.log_sender.send(log_writer::LogEntry { file_path: log_file, line });
+        // Only write per-host access log if we have a cached path
+        if let Some(ref access_path) = ctx.access_log_path {
+            let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
+            let line = format!("{} {} {} {} {}\n", now, method, host, path, status);
+            let _ = ctx.log_sender.send(log_writer::LogEntry {
+                file_path: access_path.to_string(),
+                line,
+            });
+        }
     }
 }
 
