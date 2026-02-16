@@ -85,16 +85,16 @@ impl Router {
         }
     }
 
-    /// Resolve a request to a host config and optionally a matched location.
+    /// Resolve a request to a host config and optionally a matched location with its index.
     pub fn resolve<'a>(
         &'a self,
         host: &str,
         path: &str,
-    ) -> Option<(&'a HostConfig, Option<&'a LocationConfig>)> {
+    ) -> Option<(&'a HostConfig, Option<&'a LocationConfig>, Option<usize>)> {
         let host_name = Self::normalize_host(host);
         let host_config = self.hosts.get(host_name.as_ref())?;
-        let location = self.match_location(host_config, path);
-        Some((host_config, location))
+        let (location, loc_idx) = self.match_location(host_config, path);
+        Some((host_config, location, loc_idx))
     }
 
     /// Normalize host header: strip port, lowercase.
@@ -108,13 +108,17 @@ impl Router {
         }
     }
 
-    /// Match a path against the compiled locations for a host
+    /// Match a path against the compiled locations for a host.
+    /// Returns the matched location and its index (eliminates ptr::eq scan in resolve_request).
     fn match_location<'a>(
         &'a self,
         host_config: &'a HostConfig,
         path: &str,
-    ) -> Option<&'a LocationConfig> {
-        let compiled = self.locations.get(&host_config.id)?;
+    ) -> (Option<&'a LocationConfig>, Option<usize>) {
+        let compiled = match self.locations.get(&host_config.id) {
+            Some(c) => c,
+            None => return (None, None),
+        };
 
         for cl in compiled {
             let matched = match &cl.match_type {
@@ -123,11 +127,11 @@ impl Router {
                 MatchType::Regex(re) => re.is_match(path),
             };
             if matched {
-                return host_config.locations.get(cl.index);
+                return (host_config.locations.get(cl.index), Some(cl.index));
             }
         }
 
-        None
+        (None, None)
     }
 
     /// Check if a host has any entry
@@ -155,6 +159,7 @@ mod tests {
             hsts: false,
             http2: false,
             enabled,
+            compression: true,
         }
     }
 
@@ -174,6 +179,7 @@ mod tests {
             status_code: None,
             headers: HashMap::new(),
             access_list_id: None,
+            compiled_headers: Vec::new(),
         }
     }
 
@@ -224,12 +230,12 @@ mod tests {
         let hosts = vec![make_host(1, &["example.com"], locs, true)];
         let router = Router::build(&hosts);
 
-        let (_, loc) = router.resolve("example.com", "/api/users").unwrap();
+        let (_, loc, _) = router.resolve("example.com", "/api/users").unwrap();
         assert!(loc.is_some());
         assert_eq!(loc.unwrap().path, "/api");
 
         // "/" should still match for non-api paths
-        let (_, loc) = router.resolve("example.com", "/about").unwrap();
+        let (_, loc, _) = router.resolve("example.com", "/about").unwrap();
         assert!(loc.is_some());
         assert_eq!(loc.unwrap().path, "/");
     }
@@ -244,12 +250,12 @@ mod tests {
         let router = Router::build(&hosts);
 
         // exact "/api" should win
-        let (_, loc) = router.resolve("example.com", "/api").unwrap();
+        let (_, loc, _) = router.resolve("example.com", "/api").unwrap();
         assert!(loc.is_some());
         assert_eq!(loc.unwrap().match_type, "exact");
 
         // "/api/users" should NOT match exact, falls through to prefix
-        let (_, loc) = router.resolve("example.com", "/api/users").unwrap();
+        let (_, loc, _) = router.resolve("example.com", "/api/users").unwrap();
         assert!(loc.is_some());
         assert_eq!(loc.unwrap().match_type, "prefix");
     }
@@ -259,7 +265,7 @@ mod tests {
         let locs = vec![make_location("/api", "prefix")];
         let hosts = vec![make_host(1, &["example.com"], locs, true)];
         let router = Router::build(&hosts);
-        let (_, loc) = router.resolve("example.com", "/api/users").unwrap();
+        let (_, loc, _) = router.resolve("example.com", "/api/users").unwrap();
         assert!(loc.is_some());
         assert_eq!(loc.unwrap().path, "/api");
     }
@@ -269,7 +275,7 @@ mod tests {
         let locs = vec![make_location("/api", "prefix")];
         let hosts = vec![make_host(1, &["example.com"], locs, true)];
         let router = Router::build(&hosts);
-        let (_, loc) = router.resolve("example.com", "/other").unwrap();
+        let (_, loc, _) = router.resolve("example.com", "/other").unwrap();
         assert!(loc.is_none());
     }
 
@@ -279,10 +285,10 @@ mod tests {
         let hosts = vec![make_host(1, &["example.com"], locs, true)];
         let router = Router::build(&hosts);
 
-        let (_, loc) = router.resolve("example.com", "/health").unwrap();
+        let (_, loc, _) = router.resolve("example.com", "/health").unwrap();
         assert!(loc.is_some());
 
-        let (_, loc) = router.resolve("example.com", "/health/check").unwrap();
+        let (_, loc, _) = router.resolve("example.com", "/health/check").unwrap();
         assert!(loc.is_none());
     }
 
@@ -291,7 +297,7 @@ mod tests {
         let locs = vec![make_location(r"^/files/.*\.pdf$", "regex")];
         let hosts = vec![make_host(1, &["example.com"], locs, true)];
         let router = Router::build(&hosts);
-        let (_, loc) = router.resolve("example.com", "/files/report.pdf").unwrap();
+        let (_, loc, _) = router.resolve("example.com", "/files/report.pdf").unwrap();
         assert!(loc.is_some());
     }
 
@@ -353,7 +359,7 @@ mod tests {
         let locs = vec![make_location("/api", "prefix")];
         let hosts = vec![make_host(1, &["example.com"], locs, true)];
         let router = Router::build(&hosts);
-        let (_, loc) = router.resolve("example.com", "/api/../admin").unwrap();
+        let (_, loc, _) = router.resolve("example.com", "/api/../admin").unwrap();
         assert!(loc.is_some());
     }
 
@@ -362,7 +368,7 @@ mod tests {
         let locs = vec![make_location("/health", "exact")];
         let hosts = vec![make_host(1, &["example.com"], locs, true)];
         let router = Router::build(&hosts);
-        let (_, loc) = router.resolve("example.com", "/health/../secret").unwrap();
+        let (_, loc, _) = router.resolve("example.com", "/health/../secret").unwrap();
         assert!(loc.is_none());
     }
 
@@ -372,7 +378,7 @@ mod tests {
         let hosts = vec![make_host(1, &["example.com"], locs, true)];
         let router = Router::build(&hosts);
         let long_path = format!("/files/{}", "1".repeat(10000));
-        let (_, loc) = router.resolve("example.com", &long_path).unwrap();
+        let (_, loc, _) = router.resolve("example.com", &long_path).unwrap();
         assert!(loc.is_some());
     }
 
@@ -381,7 +387,7 @@ mod tests {
         let locs = vec![make_location("[invalid", "regex")];
         let hosts = vec![make_host(1, &["example.com"], locs, true)];
         let router = Router::build(&hosts);
-        let (_, loc) = router.resolve("example.com", "/anything").unwrap();
+        let (_, loc, _) = router.resolve("example.com", "/anything").unwrap();
         assert!(loc.is_none());
     }
 
@@ -390,7 +396,7 @@ mod tests {
         let locs = vec![make_location("/", "prefix")];
         let hosts = vec![make_host(1, &["example.com"], locs, true)];
         let router = Router::build(&hosts);
-        let (_, loc) = router.resolve("example.com", "").unwrap();
+        let (_, loc, _) = router.resolve("example.com", "").unwrap();
         assert!(loc.is_none());
     }
 
@@ -399,7 +405,7 @@ mod tests {
         let locs = vec![make_location("/api", "prefix")];
         let hosts = vec![make_host(1, &["example.com"], locs, true)];
         let router = Router::build(&hosts);
-        let (_, loc) = router.resolve("example.com", "/api\0/admin").unwrap();
+        let (_, loc, _) = router.resolve("example.com", "/api\0/admin").unwrap();
         assert!(loc.is_some());
     }
 
@@ -412,7 +418,7 @@ mod tests {
             make_host(2, &["dup.com"], vec![], true),
         ];
         let router = Router::build(&hosts);
-        let (host, _) = router.resolve("dup.com", "/").unwrap();
+        let (host, _, _) = router.resolve("dup.com", "/").unwrap();
         assert_eq!(host.id, 2);
     }
 

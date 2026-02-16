@@ -116,6 +116,8 @@ enum RequestAction {
         host_id: Option<u64>,
         group_id: Option<u64>,
         hsts: bool,
+        /// Whether downstream compression is enabled for this host
+        compression: bool,
         /// Pre-compiled custom headers from the matched location (cheap Arc clones)
         custom_headers: Vec<(http::header::HeaderName, Arc<str>)>,
     },
@@ -188,6 +190,8 @@ pub struct ProxyCtx {
     group_id: Option<u64>,
     /// Whether to add HSTS header
     hsts: bool,
+    /// Whether to enable downstream response compression
+    compression: bool,
     /// Pre-compiled custom headers from the matched location
     custom_headers: Vec<(http::header::HeaderName, Arc<str>)>,
     /// Cached error_pages_dir for fail_to_proxy
@@ -209,6 +213,7 @@ impl ProxyCtx {
             host_id: None,
             group_id: None,
             hsts: false,
+            compression: true,
             custom_headers: Vec::new(),
             error_pages_dir,
             access_log_path: None,
@@ -259,6 +264,7 @@ impl ProxyApp {
                     host_id: None,
                     group_id: None,
                     hsts: false,
+                    compression: true,
                     custom_headers: Vec::new(),
                 };
             }
@@ -395,6 +401,7 @@ impl ProxyApp {
                             host_id,
                             group_id,
                             hsts,
+                            compression: host_config.compression,
                             custom_headers,
                         };
                     } else {
@@ -470,12 +477,14 @@ impl ProxyHttp for ProxyApp {
                 host_id,
                 group_id,
                 hsts,
+                compression,
                 custom_headers,
             } => {
                 ctx.upstream_addr = Some(upstream_addr);
                 ctx.host_id = host_id;
                 ctx.group_id = group_id;
                 ctx.hsts = hsts;
+                ctx.compression = compression;
                 ctx.custom_headers = custom_headers;
                 ctx.populate_log_paths(host_id, &self.state.load());
                 Ok(false)
@@ -1108,6 +1117,7 @@ mod tests {
             hsts: false,
             http2: false,
             enabled: true,
+            compression: true,
         }
     }
 
@@ -1127,6 +1137,7 @@ mod tests {
             hsts: true,
             http2: false,
             enabled: true,
+            compression: true,
         }
     }
 
@@ -1143,6 +1154,7 @@ mod tests {
             hsts: false,
             http2: false,
             enabled: true,
+            compression: true,
         }
     }
 
@@ -1173,6 +1185,7 @@ mod tests {
             hsts: false,
             http2: false,
             enabled: true,
+            compression: true,
         }
     }
 
@@ -1203,6 +1216,7 @@ mod tests {
             hsts: false,
             http2: false,
             enabled: true,
+            compression: true,
         }
     }
 
@@ -1217,6 +1231,7 @@ mod tests {
             hsts: false,
             http2: false,
             enabled: true,
+            compression: true,
         }
     }
 
@@ -1480,6 +1495,7 @@ mod tests {
             hsts: false,
             http2: false,
             enabled: true,
+            compression: true,
         };
         let app = build_app(vec![host], HashMap::new());
         let ip: IpAddr = "1.2.3.4".parse().unwrap();
@@ -1663,6 +1679,30 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_proxy_action_carries_compression_true_by_default() {
+        let ip = "10.0.0.1".parse().unwrap();
+        let app = build_app(vec![host_with_upstream(1, &["x.com"])], HashMap::new());
+        let action = app.resolve_request(Some("x.com"), "/", Some(80), Some(ip), None);
+        match action {
+            RequestAction::Proxy { compression, .. } => assert!(compression),
+            _ => panic!("expected Proxy"),
+        }
+    }
+
+    #[test]
+    fn test_proxy_action_carries_compression_false() {
+        let mut host = host_with_upstream(1, &["nocomp.com"]);
+        host.compression = false;
+        let ip = "10.0.0.1".parse().unwrap();
+        let app = build_app(vec![host], HashMap::new());
+        let action = app.resolve_request(Some("nocomp.com"), "/", Some(80), Some(ip), None);
+        match action {
+            RequestAction::Proxy { compression, .. } => assert!(!compression),
+            _ => panic!("expected Proxy"),
+        }
+    }
+
     // ─── SharedState::build ─────────────────────────────────
 
     #[test]
@@ -1717,6 +1757,7 @@ mod tests {
             hsts: false,
             http2: false,
             enabled: true,
+            compression: true,
         };
         let config = AppConfig {
             global: GlobalConfig {
@@ -1764,6 +1805,7 @@ mod tests {
             hsts: false,
             http2: false,
             enabled: true,
+            compression: true,
         }
     }
 

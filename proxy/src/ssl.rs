@@ -77,13 +77,14 @@ fn resolve_cert_pair(host: &HostConfig, ssl: &SslConfig, ssl_dir: &str) -> Optio
         "letsencrypt" => {
             // Let's Encrypt certs are stored in ssl_dir/live/{domain}/
             let primary_domain = host.domains.first()?;
+            let domain_lower = primary_domain.to_lowercase();
             let cert_path = PathBuf::from(ssl_dir)
                 .join("live")
-                .join(primary_domain)
+                .join(&domain_lower)
                 .join("fullchain.pem");
             let key_path = PathBuf::from(ssl_dir)
                 .join("live")
-                .join(primary_domain)
+                .join(&domain_lower)
                 .join("privkey.pem");
 
             // Only return if the files actually exist
@@ -163,6 +164,7 @@ mod tests {
             hsts: false,
             http2: false,
             enabled,
+            compression: true,
         }
     }
 

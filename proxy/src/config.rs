@@ -1,6 +1,7 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 /// Global proxy configuration from global.yaml
 #[derive(Debug, Clone, Deserialize)]
@@ -69,6 +70,8 @@ pub struct HostConfig {
     pub http2: bool,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    #[serde(default = "default_compression")]
+    pub compression: bool,
 }
 
 fn default_balance_method() -> String {
@@ -76,6 +79,10 @@ fn default_balance_method() -> String {
 }
 
 fn default_enabled() -> bool {
+    true
+}
+
+fn default_compression() -> bool {
     true
 }
 
@@ -142,6 +149,9 @@ pub struct LocationConfig {
     pub headers: HashMap<String, String>,
     #[serde(alias = "accessListId", alias = "access_list_id")]
     pub access_list_id: Option<u64>,
+    /// Pre-compiled HTTP headers for response injection (built at config load, not per-request)
+    #[serde(skip)]
+    pub compiled_headers: Vec<(http::header::HeaderName, Arc<str>)>,
 }
 
 fn default_match_type() -> String {
@@ -187,12 +197,22 @@ fn default_satisfy() -> String {
     "any".to_string()
 }
 
+/// Pre-parsed CIDR for zero-parse access control checks
+#[derive(Debug, Clone)]
+pub struct ParsedCidr {
+    pub ip: std::net::IpAddr,
+    pub prefix_len: u32,
+}
+
 /// Client IP rule in an access list
 #[derive(Debug, Clone, Deserialize)]
 pub struct AccessListClient {
     pub address: String,
     #[serde(default = "default_directive")]
     pub directive: String,
+    /// Pre-parsed CIDR (populated at config load time, skipped during deserialization)
+    #[serde(skip)]
+    pub parsed_cidr: Option<ParsedCidr>,
 }
 
 fn default_directive() -> String {
@@ -204,6 +224,22 @@ fn default_directive() -> String {
 pub struct AccessListAuthEntry {
     pub username: String,
     pub password: String,
+}
+
+/// Parse a CIDR string like "10.0.0.0/24" or "192.168.1.1" into IP + prefix length
+fn parse_cidr(address: &str) -> Option<ParsedCidr> {
+    if address == "all" {
+        return None; // "all" is handled as a special keyword, not a CIDR
+    }
+    if let Some((network_str, prefix_str)) = address.split_once('/') {
+        let ip: std::net::IpAddr = network_str.parse().ok()?;
+        let prefix_len: u32 = prefix_str.parse().ok()?;
+        Some(ParsedCidr { ip, prefix_len })
+    } else {
+        let ip: std::net::IpAddr = address.parse().ok()?;
+        let prefix_len = if ip.is_ipv4() { 32 } else { 128 };
+        Some(ParsedCidr { ip, prefix_len })
+    }
 }
 
 /// Aggregated application config loaded from all YAML files
@@ -232,7 +268,18 @@ impl AppConfig {
         };
 
         // Load host configs
-        let hosts = Self::load_glob(configs_dir, "host-*.yaml")?;
+        let mut hosts: Vec<HostConfig> = Self::load_glob(configs_dir, "host-*.yaml")?;
+
+        // Pre-compile headers for each location
+        for host in &mut hosts {
+            for loc in &mut host.locations {
+                loc.compiled_headers = loc.headers.iter().filter_map(|(k, v)| {
+                    http::header::HeaderName::from_bytes(k.as_bytes())
+                        .ok()
+                        .map(|name| (name, Arc::from(v.as_str())))
+                }).collect();
+            }
+        }
 
         // Load access lists
         let access_lists_path = dir.join("access-lists.yaml");
@@ -242,8 +289,15 @@ impl AppConfig {
         } else {
             Vec::new()
         };
-        let access_lists: HashMap<u64, AccessListConfig> =
+        let mut access_lists: HashMap<u64, AccessListConfig> =
             access_lists_vec.into_iter().map(|a| (a.id, a)).collect();
+
+        // Pre-parse CIDRs at config load time for zero-parse access checks
+        for acl in access_lists.values_mut() {
+            for client in &mut acl.clients {
+                client.parsed_cidr = parse_cidr(&client.address);
+            }
+        }
 
         Ok(AppConfig {
             global,
@@ -405,8 +459,23 @@ mod tests {
         assert!(!cfg.hsts);
         assert!(!cfg.http2);
         assert!(cfg.enabled);
+        assert!(cfg.compression);
         assert!(cfg.ssl.is_none());
         assert!(cfg.group_id.is_none());
+    }
+
+    #[test]
+    fn test_host_config_compression_default_true() {
+        let yaml = "id: 1";
+        let cfg: HostConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(cfg.compression); // default is true
+    }
+
+    #[test]
+    fn test_host_config_compression_explicit_false() {
+        let yaml = "id: 1\ncompression: false";
+        let cfg: HostConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(!cfg.compression);
     }
 
     #[test]
