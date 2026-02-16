@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.0] - 2026-02-16
+
+### Added
+- **Upstream test button** — test TCP connectivity to any upstream directly from the host edit form (Locations and Stream Ports tabs)
+- **Hostname support in upstreams** — proxy resolves DNS hostnames (e.g. Docker service names) to IP addresses, not just raw IPs
+- API endpoint `POST /api/test-upstream` for on-demand upstream health checks
+
+### Changed
+- **Hosts page header redesign** — split into two rows: title + Add Host on top, search bar + view toggle + management buttons in a toolbar below
+- **Compact upstream rows** — replaced bulky upstream cards with streamlined single-line layout (server, port, weight, test, delete)
+
+## [1.1.0] - 2026-02-15
+
+### Changed
+- **Location-centric host model** — hosts now use a flexible locations array instead of a single upstream configuration, supporting multiple paths with different routing types per host
+
 ## [1.0.3] - 2026-02-13
 
 ### Added

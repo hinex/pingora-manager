@@ -1,9 +1,10 @@
+import { useState, useCallback } from "react";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { Textarea } from "~/components/ui/textarea";
 import { Button } from "~/components/ui/button";
 import { Separator } from "~/components/ui/separator";
-import { Plus, Trash2 } from "lucide-react";
+import { Plus, Trash2, Zap, Loader2 } from "lucide-react";
 import type { StreamPortFormData } from "./HostForm";
 
 interface AdvancedTabProps {
@@ -65,6 +66,38 @@ export function AdvancedTab({
     upstreams[upIndex] = { ...upstreams[upIndex], [field]: value };
     updateStreamPort(spIndex, { upstreams });
   };
+
+  const [testResults, setTestResults] = useState<
+    Record<string, { status: "up" | "down"; responseMs: number; error?: string; loading?: boolean }>
+  >({});
+
+  const testUpstream = useCallback(async (spIndex: number, upIndex: number, server: string, port: number) => {
+    const key = `${spIndex}-${upIndex}`;
+    setTestResults((prev) => ({ ...prev, [key]: { status: "up", responseMs: 0, loading: true } }));
+
+    try {
+      const res = await fetch("/api/test-upstream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ server, port }),
+      });
+      const data = await res.json();
+      setTestResults((prev) => ({ ...prev, [key]: data }));
+    } catch {
+      setTestResults((prev) => ({
+        ...prev,
+        [key]: { status: "down", responseMs: 0, error: "Request failed" },
+      }));
+    }
+
+    setTimeout(() => {
+      setTestResults((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+    }, 5000);
+  }, []);
 
   return (
     <div className="space-y-4">
@@ -160,53 +193,72 @@ export function AdvancedTab({
                   </div>
                   {sp.upstreams.length > 0 && (
                     <div className="space-y-2">
-                      {sp.upstreams.map((upstream, upIndex) => (
-                        <div key={upIndex} className="rounded-md bg-muted/50 p-3">
-                          <div className="flex justify-between items-center mb-2">
-                            <span className="text-xs text-muted-foreground">
-                              Upstream {upIndex + 1}
-                            </span>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              type="button"
-                              onClick={() => removeStreamUpstream(spIndex, upIndex)}
-                            >
-                              <Trash2 className="h-3 w-3" />
-                            </Button>
+                      {sp.upstreams.map((upstream, upIndex) => {
+                        const testKey = `${spIndex}-${upIndex}`;
+                        const result = testResults[testKey];
+                        return (
+                          <div key={upIndex}>
+                            <div className="flex items-center gap-2">
+                              <Input
+                                type="text"
+                                value={upstream.server}
+                                onChange={(e) =>
+                                  updateStreamUpstream(spIndex, upIndex, "server", e.target.value)
+                                }
+                                placeholder="Server"
+                                className="text-xs flex-1"
+                              />
+                              <Input
+                                type="number"
+                                value={upstream.port}
+                                onChange={(e) =>
+                                  updateStreamUpstream(spIndex, upIndex, "port", Number(e.target.value))
+                                }
+                                placeholder="Port"
+                                className="text-xs w-24"
+                              />
+                              <Input
+                                type="number"
+                                value={upstream.weight}
+                                onChange={(e) =>
+                                  updateStreamUpstream(spIndex, upIndex, "weight", Number(e.target.value))
+                                }
+                                placeholder="Weight"
+                                className="text-xs w-20"
+                                min={1}
+                              />
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                type="button"
+                                disabled={!upstream.server || !upstream.port || !!result?.loading}
+                                onClick={() => testUpstream(spIndex, upIndex, upstream.server, upstream.port)}
+                              >
+                                {result?.loading ? (
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                ) : (
+                                  <Zap className="h-3 w-3" />
+                                )}
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                type="button"
+                                onClick={() => removeStreamUpstream(spIndex, upIndex)}
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </Button>
+                            </div>
+                            {result && !result.loading && (
+                              <p className={`text-xs mt-1 ml-1 ${result.status === "up" ? "text-green-500" : "text-red-500"}`}>
+                                {result.status === "up"
+                                  ? `up \u00B7 ${result.responseMs}ms`
+                                  : `down \u00B7 ${result.error}`}
+                              </p>
+                            )}
                           </div>
-                          <div className="grid grid-cols-3 gap-2">
-                            <Input
-                              type="text"
-                              value={upstream.server}
-                              onChange={(e) =>
-                                updateStreamUpstream(spIndex, upIndex, "server", e.target.value)
-                              }
-                              placeholder="Server"
-                              className="text-xs"
-                            />
-                            <Input
-                              type="number"
-                              value={upstream.port}
-                              onChange={(e) =>
-                                updateStreamUpstream(spIndex, upIndex, "port", Number(e.target.value))
-                              }
-                              placeholder="Port"
-                              className="text-xs"
-                            />
-                            <Input
-                              type="number"
-                              value={upstream.weight}
-                              onChange={(e) =>
-                                updateStreamUpstream(spIndex, upIndex, "weight", Number(e.target.value))
-                              }
-                              placeholder="Weight"
-                              className="text-xs"
-                              min={1}
-                            />
-                          </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
                 </div>

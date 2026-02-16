@@ -317,23 +317,30 @@ export default function HostsIndex({ loaderData }: Route.ComponentProps) {
   return (
     <div className="space-y-6">
       {/* ── Header ────────────────────────────────────────────── */}
-      <div className="flex flex-wrap items-center gap-3 min-h-10">
-        <h1 className="text-2xl font-semibold tracking-tight mr-auto">
-          Hosts
-        </h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-semibold tracking-tight">Hosts</h1>
+        <Button asChild>
+          <Link to="/admin/hosts/new">
+            <Plus className="mr-2 h-4 w-4" />
+            Add Host
+          </Link>
+        </Button>
+      </div>
 
-        {/* Search */}
-        <div className="relative">
+      {/* ── Toolbar ────────────────────────────────────────────── */}
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="relative flex-1 max-w-[300px]">
           <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
           <Input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search hosts..."
-            className="pl-9 w-56"
+            className="pl-9"
           />
         </div>
 
-        {/* View toggle */}
+        <div className="flex-1" />
+
         <div className="flex rounded-md border">
           <Button
             variant={viewMode === "groups" ? "default" : "ghost"}
@@ -355,32 +362,14 @@ export default function HostsIndex({ loaderData }: Route.ComponentProps) {
           </Button>
         </div>
 
-        {/* Manage Groups */}
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => setGroupsModalOpen(true)}
-        >
+        <Button variant="outline" size="sm" onClick={() => setGroupsModalOpen(true)}>
           <Settings2 className="mr-1.5 h-4 w-4" />
           Manage Groups
         </Button>
 
-        {/* Manage Labels */}
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => setLabelsModalOpen(true)}
-        >
+        <Button variant="outline" size="sm" onClick={() => setLabelsModalOpen(true)}>
           <Tags className="mr-1.5 h-4 w-4" />
           Manage Labels
-        </Button>
-
-        {/* Add Host */}
-        <Button asChild>
-          <Link to="/admin/hosts/new">
-            <Plus className="mr-2 h-4 w-4" />
-            Add Host
-          </Link>
         </Button>
       </div>
 

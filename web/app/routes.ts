@@ -5,6 +5,7 @@ export default [
   route("login", "./routes/login.tsx"),
   route("logout", "./routes/logout.tsx"),
   route("api/logs", "./routes/api/logs.tsx"),
+  route("api/test-upstream", "./routes/api/test-upstream.tsx"),
 
   layout("./routes/admin/layout.tsx", [
     ...prefix("admin", [

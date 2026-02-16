@@ -2,6 +2,7 @@ use crate::config::UpstreamConfig;
 use pingora_load_balancing::selection::{Consistent, Random, RoundRobin};
 use pingora_load_balancing::{discovery, Backend, Backends, LoadBalancer};
 use std::collections::BTreeSet;
+use std::net::ToSocketAddrs;
 use std::sync::Arc;
 
 /// Enum wrapping different load balancer selection algorithms
@@ -64,12 +65,27 @@ where
     let mut backend_set = BTreeSet::new();
     for upstream in upstreams {
         let addr_str = format!("{}:{}", upstream.server, upstream.port);
-        match Backend::new_with_weight(&addr_str, upstream.weight) {
+        // Pingora's Backend only accepts IP socket addresses, so resolve
+        // hostnames (e.g. Docker service names) to IPs first.
+        let resolved = match addr_str.to_socket_addrs() {
+            Ok(mut addrs) => match addrs.next() {
+                Some(addr) => addr.to_string(),
+                None => {
+                    log::error!("No addresses resolved for {}", addr_str);
+                    continue;
+                }
+            },
+            Err(e) => {
+                log::error!("Failed to resolve {}: {}", addr_str, e);
+                continue;
+            }
+        };
+        match Backend::new_with_weight(&resolved, upstream.weight) {
             Ok(backend) => {
                 backend_set.insert(backend);
             }
             Err(e) => {
-                log::error!("Failed to create backend for {}: {}", addr_str, e);
+                log::error!("Failed to create backend for {} (resolved: {}): {}", addr_str, resolved, e);
             }
         }
     }
