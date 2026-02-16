@@ -5,6 +5,7 @@ mod router;
 mod ssl;
 mod static_files;
 mod streams;
+mod log_writer;
 mod upstream;
 
 use async_trait::async_trait;
@@ -15,9 +16,7 @@ use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_proxy::{http_proxy_service, ProxyHttp, Session};
 use router::Router;
 use ssl::SslCertManager;
-use std::fs::OpenOptions;
-use std::io::Write;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
 use upstream::UpstreamSelector;
@@ -32,6 +31,9 @@ struct SharedState {
     ssl_manager: SslCertManager,
     /// Location-level load balancers keyed by (host_id, location_index)
     location_lbs: std::collections::HashMap<(u64, usize), UpstreamSelector>,
+    /// Pre-formatted upstream addresses: SocketAddr → Arc<str>
+    /// Avoids per-request to_string() allocation in resolve_request
+    addr_cache: std::collections::HashMap<SocketAddr, Arc<str>>,
     /// Admin upstream address (Arc<str> to avoid cloning String per admin request)
     admin_upstream: Arc<str>,
     /// Cached error_pages_dir (Arc<str>)
@@ -40,10 +42,11 @@ struct SharedState {
     default_page: Arc<str>,
     /// Cached logs_dir (Arc<str>)
     logs_dir: Arc<str>,
+    log_sender: log_writer::LogSender,
 }
 
 impl SharedState {
-    fn build(config: AppConfig) -> Self {
+    fn build(config: AppConfig, log_sender: log_writer::LogSender) -> Self {
         let router = Router::build(&config.hosts);
         let ssl_manager = SslCertManager::build(&config);
 
@@ -63,6 +66,21 @@ impl SharedState {
             }
         }
 
+        let mut addr_cache = std::collections::HashMap::new();
+        for host in &config.hosts {
+            if !host.enabled { continue; }
+            for loc in &host.locations {
+                for upstream_cfg in &loc.upstreams {
+                    let addr_str = format!("{}:{}", upstream_cfg.server, upstream_cfg.port);
+                    if let Ok(mut addrs) = addr_str.to_socket_addrs() {
+                        if let Some(addr) = addrs.next() {
+                            addr_cache.entry(addr).or_insert_with(|| Arc::from(addr.to_string().as_str()));
+                        }
+                    }
+                }
+            }
+        }
+
         let admin_upstream: Arc<str> = config.global.admin_upstream.as_str().into();
         let error_pages_dir: Arc<str> = config.global.error_pages_dir.as_str().into();
         let default_page: Arc<str> = config.global.default_page.as_str().into();
@@ -73,10 +91,12 @@ impl SharedState {
             router,
             ssl_manager,
             location_lbs,
+            addr_cache,
             admin_upstream,
             error_pages_dir,
             default_page,
             logs_dir,
+            log_sender,
         }
     }
 }
@@ -85,12 +105,12 @@ impl SharedState {
 enum RequestAction {
     /// Proxy to the given upstream address
     Proxy {
-        upstream_addr: String,
+        upstream_addr: Arc<str>,
         host_id: Option<u64>,
         group_id: Option<u64>,
         hsts: bool,
-        /// Custom headers from the matched location
-        custom_headers: Vec<(String, String)>,
+        /// Pre-compiled custom headers from the matched location (cheap Arc clones)
+        custom_headers: Vec<(http::header::HeaderName, Arc<str>)>,
     },
     /// Send a redirect response (from a redirect-type location)
     Redirect {
@@ -103,24 +123,24 @@ enum RequestAction {
     },
     /// Serve a static file
     ServeStatic {
-        static_dir: String,
-        location_path: String,
-        cache_expires: Option<String>,
+        static_dir: Arc<str>,
+        location_path: Arc<str>,
+        cache_expires: Option<Arc<str>>,
         host_id: Option<u64>,
         group_id: Option<u64>,
         error_pages_dir: Arc<str>,
-        /// Custom headers from the matched location
-        custom_headers: Vec<(String, String)>,
+        /// Pre-compiled custom headers from the matched location (cheap Arc clones)
+        custom_headers: Vec<(http::header::HeaderName, Arc<str>)>,
     },
     /// Serve a single file (file-type location)
     ServeFile {
-        file_path: String,
-        cache_expires: Option<String>,
+        file_path: Arc<str>,
+        cache_expires: Option<Arc<str>>,
         host_id: Option<u64>,
         group_id: Option<u64>,
         error_pages_dir: Arc<str>,
-        /// Custom headers from the matched location
-        custom_headers: Vec<(String, String)>,
+        /// Pre-compiled custom headers from the matched location (cheap Arc clones)
+        custom_headers: Vec<(http::header::HeaderName, Arc<str>)>,
     },
     /// Serve the default page (no matching host)
     ServeDefault {
@@ -149,8 +169,8 @@ enum RequestAction {
 
 /// Per-request context passed through the ProxyHttp callbacks
 pub struct ProxyCtx {
-    /// The selected upstream address (host:port)
-    upstream_addr: Option<String>,
+    /// The selected upstream address (host:port) — Arc<str> avoids String clone
+    upstream_addr: Option<Arc<str>>,
     /// Whether this request should use TLS to upstream
     upstream_tls: bool,
     /// SNI for upstream TLS
@@ -161,16 +181,18 @@ pub struct ProxyCtx {
     group_id: Option<u64>,
     /// Whether to add HSTS header
     hsts: bool,
-    /// Custom headers from the matched location
-    custom_headers: Vec<(String, String)>,
+    /// Pre-compiled custom headers from the matched location
+    custom_headers: Vec<(http::header::HeaderName, Arc<str>)>,
     /// Cached error_pages_dir for fail_to_proxy
     error_pages_dir: Arc<str>,
     /// Logs directory for per-host file logging
     logs_dir: Arc<str>,
+    /// Async log sender (non-blocking channel send instead of file I/O)
+    log_sender: log_writer::LogSender,
 }
 
 impl ProxyCtx {
-    fn new(error_pages_dir: Arc<str>, logs_dir: Arc<str>) -> Self {
+    fn new(error_pages_dir: Arc<str>, logs_dir: Arc<str>, log_sender: log_writer::LogSender) -> Self {
         ProxyCtx {
             upstream_addr: None,
             upstream_tls: false,
@@ -181,6 +203,7 @@ impl ProxyCtx {
             custom_headers: Vec::new(),
             error_pages_dir,
             logs_dir,
+            log_sender,
         }
     }
 }
@@ -212,7 +235,7 @@ impl ProxyApp {
         if let Some(port) = server_port {
             if port == state.config.global.listen.admin {
                 return RequestAction::Proxy {
-                    upstream_addr: state.admin_upstream.to_string(),
+                    upstream_addr: Arc::clone(&state.admin_upstream),
                     host_id: None,
                     group_id: None,
                     hsts: false,
@@ -230,7 +253,7 @@ impl ProxyApp {
             }
         }
 
-        // Resolve host and location
+        // Resolve host and location (router returns index directly, no ptr::eq scan needed)
         let resolved = state.router.resolve(host_str, path);
         if resolved.is_none() {
             return RequestAction::ServeDefault {
@@ -239,7 +262,7 @@ impl ProxyApp {
             };
         }
 
-        let (host_config, location) = resolved.unwrap();
+        let (host_config, location, loc_idx) = resolved.unwrap();
         let host_id = Some(host_config.id);
         let group_id = host_config.group_id;
         let hsts = host_config.hsts;
@@ -284,9 +307,8 @@ impl ProxyApp {
         // Check location type
         if let Some(loc) = location {
             let loc_type = loc.location_type.as_deref().unwrap_or("proxy");
-            let custom_headers: Vec<(String, String)> = loc.headers.iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
+            // Use pre-compiled headers (cheap Arc clones instead of String clones)
+            let custom_headers = loc.compiled_headers.clone();
 
             match loc_type {
                 "redirect" => {
@@ -304,9 +326,9 @@ impl ProxyApp {
                 "static" => {
                     if let Some(ref static_dir) = loc.static_dir {
                         return RequestAction::ServeStatic {
-                            static_dir: static_dir.clone(),
-                            location_path: loc.path.clone(),
-                            cache_expires: loc.cache_expires.clone(),
+                            static_dir: Arc::from(static_dir.as_str()),
+                            location_path: Arc::from(loc.path.as_str()),
+                            cache_expires: loc.cache_expires.as_deref().map(Arc::from),
                             host_id,
                             group_id,
                             error_pages_dir: Arc::clone(&state.error_pages_dir),
@@ -317,8 +339,8 @@ impl ProxyApp {
                 "file" => {
                     if let Some(ref file_path) = loc.static_dir {
                         return RequestAction::ServeFile {
-                            file_path: file_path.clone(),
-                            cache_expires: loc.cache_expires.clone(),
+                            file_path: Arc::from(file_path.as_str()),
+                            cache_expires: loc.cache_expires.as_deref().map(Arc::from),
                             host_id,
                             group_id,
                             error_pages_dir: Arc::clone(&state.error_pages_dir),
@@ -328,19 +350,23 @@ impl ProxyApp {
                 }
                 _ => {
                     // Proxy type — determine upstream from location-level LB
-                    let key = client_ip.map(|ip| ip.to_string()).unwrap_or_default();
-                    let key_bytes = key.as_bytes();
-
-                    let loc_idx = host_config
-                        .locations
-                        .iter()
-                        .position(|l| std::ptr::eq(l, loc));
+                    // Use raw IP octets as key (zero-alloc) instead of ip.to_string()
+                    let mut key_buf = [0u8; 16];
+                    let key_bytes: &[u8] = match client_ip {
+                        Some(std::net::IpAddr::V4(ip)) => { key_buf[..4].copy_from_slice(&ip.octets()); &key_buf[..4] }
+                        Some(std::net::IpAddr::V6(ip)) => { key_buf.copy_from_slice(&ip.octets()); &key_buf }
+                        None => &[],
+                    };
 
                     let upstream_addr = loc_idx.and_then(|idx| {
                         state.location_lbs.get(&(host_config.id, idx))
                     }).and_then(|lb| {
                         lb.select(key_bytes)
-                            .and_then(|b| b.addr.as_inet().map(|a| a.to_string()))
+                            .and_then(|b| b.addr.as_inet().map(|a| {
+                                state.addr_cache.get(&a)
+                                    .map(Arc::clone)
+                                    .unwrap_or_else(|| Arc::from(a.to_string().as_str()))
+                            }))
                     });
 
                     if let Some(addr) = upstream_addr {
@@ -377,7 +403,11 @@ impl ProxyHttp for ProxyApp {
 
     fn new_ctx(&self) -> Self::CTX {
         let state = self.state.load();
-        ProxyCtx::new(Arc::clone(&state.error_pages_dir), Arc::clone(&state.logs_dir))
+        ProxyCtx::new(
+            Arc::clone(&state.error_pages_dir),
+            Arc::clone(&state.logs_dir),
+            state.log_sender.clone(),
+        )
     }
 
     /// Handle the incoming request: access control, redirects, static files
@@ -482,11 +512,9 @@ impl ProxyHttp for ProxyApp {
                     cache_expires.as_deref(),
                     ims_owned.as_deref(),
                 ) {
-                    // Add custom headers from location
-                    for (key, value) in &custom_headers {
-                        if let Ok(name) = http::header::HeaderName::from_bytes(key.as_bytes()) {
-                            let _ = file_resp.header.insert_header(name, value.as_str());
-                        }
+                    // Add pre-compiled custom headers from location
+                    for (name, value) in &custom_headers {
+                        let _ = file_resp.header.insert_header(name.clone(), value.as_ref());
                     }
                     session
                         .write_response_header(Box::new(file_resp.header), false)
@@ -528,10 +556,8 @@ impl ProxyHttp for ProxyApp {
                     cache_expires.as_deref(),
                     ims_owned.as_deref(),
                 ) {
-                    for (key, value) in &custom_headers {
-                        if let Ok(name) = http::header::HeaderName::from_bytes(key.as_bytes()) {
-                            let _ = file_resp.header.insert_header(name, value.as_str());
-                        }
+                    for (name, value) in &custom_headers {
+                        let _ = file_resp.header.insert_header(name.clone(), value.as_ref());
                     }
                     session
                         .write_response_header(Box::new(file_resp.header), false)
@@ -682,7 +708,7 @@ impl ProxyHttp for ProxyApp {
             })?;
 
         let mut peer = HttpPeer::new(
-            addr.as_str(),
+            addr.as_ref(),
             ctx.upstream_tls,
             ctx.upstream_sni.clone(),
         );
@@ -752,11 +778,9 @@ impl ProxyHttp for ProxyApp {
             );
         }
 
-        // Add custom headers from the matched location
-        for (key, value) in &ctx.custom_headers {
-            if let Ok(name) = http::header::HeaderName::from_bytes(key.as_bytes()) {
-                let _ = upstream_response.insert_header(name, value.as_str());
-            }
+        // Add pre-compiled custom headers from the matched location
+        for (name, value) in &ctx.custom_headers {
+            let _ = upstream_response.insert_header(name.clone(), value.as_ref());
         }
 
         // Add server header
@@ -828,21 +852,17 @@ impl ProxyHttp for ProxyApp {
                 None => format!("{}/proxy_general.log", ctx.logs_dir),
             };
             let line = format!("{} {} {} {} {} - error: {}\n", now, method, host, path, status, err);
-            if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&log_file) {
-                let _ = f.write_all(line.as_bytes());
-            }
+            let _ = ctx.log_sender.send(log_writer::LogEntry { file_path: log_file, line });
         } else {
             log::info!("{} {} {} {}", method, host, path, status);
-
-            let log_file = match ctx.host_id {
-                Some(id) => format!("{}/proxy-host-{}_access.log", ctx.logs_dir, id),
-                None => format!("{}/proxy_general.log", ctx.logs_dir),
-            };
-            let line = format!("{} {} {} {} {}\n", now, method, host, path, status);
-            if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&log_file) {
-                let _ = f.write_all(line.as_bytes());
-            }
         }
+
+        let log_file = match ctx.host_id {
+            Some(id) => format!("{}/proxy-host-{}_access.log", ctx.logs_dir, id),
+            None => format!("{}/proxy_general.log", ctx.logs_dir),
+        };
+        let line = format!("{} {} {} {} {}\n", now, method, host, path, status);
+        let _ = ctx.log_sender.send(log_writer::LogEntry { file_path: log_file, line });
     }
 }
 
@@ -879,7 +899,8 @@ fn main() {
         .collect();
 
     // Build shared state with ArcSwap for lock-free reads
-    let shared_state = Arc::new(arc_swap::ArcSwap::from_pointee(SharedState::build(config)));
+    let (log_sender, log_receiver) = log_writer::create_log_channel();
+    let shared_state = Arc::new(arc_swap::ArcSwap::from_pointee(SharedState::build(config, log_sender.clone())));
 
     // Check SSL before moving shared_state
     let has_ssl_certs = shared_state.load().ssl_manager.has_certs();
@@ -890,6 +911,7 @@ fn main() {
 
     // Set up SIGHUP handler for config reload
     let reload_state = Arc::clone(&shared_state);
+    let log_sender_reload = log_sender.clone();
     std::thread::spawn(move || {
         use std::sync::atomic::{AtomicBool, Ordering};
         static SIGHUP_RECEIVED: AtomicBool = AtomicBool::new(false);
@@ -905,7 +927,7 @@ fn main() {
                 log::info!("SIGHUP received, reloading configuration...");
                 match AppConfig::load(CONFIGS_DIR) {
                     Ok(new_config) => {
-                        let new_state = Arc::new(SharedState::build(new_config));
+                        let new_state = Arc::new(SharedState::build(new_config, log_sender_reload.clone()));
                         reload_state.store(new_state);
                         log::info!("Configuration reloaded successfully");
                     }
@@ -973,6 +995,15 @@ fn main() {
         admin_port
     );
 
+    // Spawn async log writer on a background runtime
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(log_writer::run_log_writer(log_receiver));
+    });
+
     server.run_forever();
 }
 
@@ -1001,7 +1032,8 @@ mod tests {
             hosts,
             access_lists,
         };
-        let state = SharedState::build(config);
+        let (log_sender, _log_receiver) = log_writer::create_log_channel();
+        let state = SharedState::build(config, log_sender);
         let swap = Arc::new(arc_swap::ArcSwap::from_pointee(state));
         ProxyApp::new(swap)
     }
@@ -1026,6 +1058,7 @@ mod tests {
             status_code: None,
             headers: HashMap::new(),
             access_list_id: None,
+            compiled_headers: Vec::new(),
         }
     }
 
@@ -1099,6 +1132,7 @@ mod tests {
                 status_code: None,
                 headers: HashMap::new(),
                 access_list_id: None,
+                compiled_headers: Vec::new(),
             }],
             stream_ports: vec![],
             hsts: false,
@@ -1128,6 +1162,7 @@ mod tests {
                 status_code: Some(301),
                 headers: HashMap::new(),
                 access_list_id: None,
+                compiled_headers: Vec::new(),
             }],
             stream_ports: vec![],
             hsts: false,
@@ -1158,6 +1193,7 @@ mod tests {
             clients: vec![AccessListClient {
                 address: "all".to_string(),
                 directive: "deny".to_string(),
+                parsed_cidr: None,
             }],
             auth: vec![],
         }
@@ -1184,7 +1220,7 @@ mod tests {
         let action = app.resolve_request(Some("anything.com"), "/", Some(81), None, None);
         match action {
             RequestAction::Proxy { upstream_addr, .. } => {
-                assert_eq!(upstream_addr, "127.0.0.1:3001");
+                assert_eq!(&*upstream_addr, "127.0.0.1:3001");
             }
             _ => panic!("expected Proxy for admin port"),
         }
@@ -1199,7 +1235,7 @@ mod tests {
         let action = app.resolve_request(Some("evil.com"), "/", Some(81), None, None);
         match action {
             RequestAction::Proxy { upstream_addr, .. } => {
-                assert_eq!(upstream_addr, "127.0.0.1:3001");
+                assert_eq!(&*upstream_addr, "127.0.0.1:3001");
             }
             _ => panic!("expected admin Proxy"),
         }
@@ -1428,9 +1464,9 @@ mod tests {
         let action = app.resolve_request(Some("static.com"), "/static/file.js", Some(80), Some(ip), None);
         match action {
             RequestAction::ServeStatic { static_dir, location_path, cache_expires, .. } => {
-                assert_eq!(static_dir, "/var/www/static");
-                assert_eq!(location_path, "/static");
-                assert_eq!(cache_expires.unwrap(), "30d");
+                assert_eq!(&*static_dir, "/var/www/static");
+                assert_eq!(&*location_path, "/static");
+                assert_eq!(&*cache_expires.unwrap(), "30d");
             }
             _ => panic!("expected ServeStatic"),
         }
@@ -1608,7 +1644,8 @@ mod tests {
             hosts: vec![],
             access_lists: HashMap::new(),
         };
-        let state = SharedState::build(config);
+        let (log_sender, _) = log_writer::create_log_channel();
+        let state = SharedState::build(config, log_sender);
         assert!(!state.ssl_manager.has_certs());
         assert!(state.location_lbs.is_empty());
     }
@@ -1639,6 +1676,7 @@ mod tests {
                 status_code: None,
                 headers: HashMap::new(),
                 access_list_id: None,
+                compiled_headers: Vec::new(),
             }],
             stream_ports: vec![],
             hsts: false,
@@ -1657,7 +1695,8 @@ mod tests {
             hosts: vec![host],
             access_lists: HashMap::new(),
         };
-        let state = SharedState::build(config);
+        let (log_sender, _) = log_writer::create_log_channel();
+        let state = SharedState::build(config, log_sender);
         assert!(state.location_lbs.contains_key(&(1, 0)));
     }
 
@@ -1684,6 +1723,7 @@ mod tests {
                 status_code: None,
                 headers: HashMap::new(),
                 access_list_id: None,
+                compiled_headers: Vec::new(),
             }],
             stream_ports: vec![],
             hsts: false,
@@ -1702,8 +1742,8 @@ mod tests {
         let action = app.resolve_request(Some("files.com"), "/sitemap.xml", Some(80), Some(ip), None);
         match action {
             RequestAction::ServeFile { file_path, cache_expires, .. } => {
-                assert_eq!(file_path, "/var/www/sitemap.xml");
-                assert_eq!(cache_expires.unwrap(), "1h");
+                assert_eq!(&*file_path, "/var/www/sitemap.xml");
+                assert_eq!(&*cache_expires.unwrap(), "1h");
             }
             _ => panic!("expected ServeFile"),
         }
