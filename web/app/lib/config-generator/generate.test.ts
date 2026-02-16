@@ -5,135 +5,246 @@ vi.mock("~/lib/db/connection", () => ({ db: {} }));
 vi.mock("~/lib/db/schema", () => ({}));
 
 import {
-  buildProxyHostConfig,
-  buildStaticHostConfig,
-  buildRedirectConfig,
-  buildStreamConfig,
+  buildHostConfig,
   buildGlobalConfig,
 } from "./generate";
 
-describe("buildProxyHostConfig", () => {
-  const host = {
-    id: 1,
-    groupId: 5,
-    domains: ["example.com", "www.example.com"],
-    sslType: "letsencrypt",
-    sslForceHttps: true,
-    sslCertPath: "/etc/letsencrypt/live/example.com/fullchain.pem",
-    sslKeyPath: "/etc/letsencrypt/live/example.com/privkey.pem",
-    upstreams: [{ server: "10.0.0.1", port: 8080, weight: 1 }],
-    balanceMethod: "round_robin",
-    locations: [{ path: "/", matchType: "prefix", type: "proxy" }],
-    hsts: true,
-    http2: true,
-    advancedYaml: null,
-    enabled: true,
-  } as any;
+describe("buildHostConfig", () => {
+  it("maps a host with proxy locations", () => {
+    const host = {
+      id: 1,
+      groupId: 5,
+      domains: ["example.com", "www.example.com"],
+      sslType: "letsencrypt",
+      sslForceHttps: true,
+      sslCertPath: "/etc/letsencrypt/live/example.com/fullchain.pem",
+      sslKeyPath: "/etc/letsencrypt/live/example.com/privkey.pem",
+      hsts: true,
+      http2: true,
+      locations: [
+        {
+          path: "/",
+          matchType: "prefix",
+          type: "proxy",
+          upstreams: [{ server: "10.0.0.1", port: 8080, weight: 1 }],
+          balanceMethod: "round_robin",
+          staticDir: "",
+          cacheExpires: "",
+          forwardScheme: "https",
+          forwardDomain: "",
+          forwardPath: "/",
+          preservePath: true,
+          statusCode: 301,
+          headers: { "X-Forwarded-For": "$remote_addr" },
+          accessListId: 3,
+        },
+      ],
+      streamPorts: [],
+      advancedYaml: null,
+      enabled: true,
+    } as any;
 
-  it("maps domains array and camelCase fields to snake_case", () => {
-    const cfg = buildProxyHostConfig(host);
+    const cfg = buildHostConfig(host);
+
     expect(cfg.domains).toEqual(["example.com", "www.example.com"]);
     expect(cfg.group_id).toBe(5);
-    expect(cfg.balance_method).toBe("round_robin");
-    expect(cfg.advanced_yaml).toBeNull();
-  });
-
-  it("maps SSL fields into nested object", () => {
-    const cfg = buildProxyHostConfig(host);
     expect(cfg.ssl).toEqual({
       type: "letsencrypt",
       force_https: true,
       cert_path: "/etc/letsencrypt/live/example.com/fullchain.pem",
       key_path: "/etc/letsencrypt/live/example.com/privkey.pem",
     });
-  });
-});
-
-describe("buildStaticHostConfig", () => {
-  const host = {
-    id: 2,
-    groupId: null,
-    domains: ["static.example.com"],
-    sslType: "none",
-    sslForceHttps: false,
-    sslCertPath: null,
-    sslKeyPath: null,
-    staticDir: "/var/www/html",
-    cacheExpires: "30d",
-    hsts: false,
-    http2: true,
-    advancedYaml: null,
-    enabled: true,
-  } as any;
-
-  it("creates a single static location from staticDir and cacheExpires", () => {
-    const cfg = buildStaticHostConfig(host);
+    expect(cfg.hsts).toBe(true);
+    expect(cfg.http2).toBe(true);
     expect(cfg.locations).toHaveLength(1);
     expect(cfg.locations[0]).toEqual({
       path: "/",
       matchType: "prefix",
-      type: "static",
-      staticDir: "/var/www/html",
-      cacheExpires: "30d",
+      type: "proxy",
+      upstreams: [{ server: "10.0.0.1", port: 8080, weight: 1 }],
+      balanceMethod: "round_robin",
+      staticDir: "",
+      cacheExpires: "",
+      forwardScheme: "https",
+      forwardDomain: "",
+      forwardPath: "/",
+      preservePath: true,
+      statusCode: 301,
+      headers: { "X-Forwarded-For": "$remote_addr" },
+      access_list_id: 3,
+    });
+    expect(cfg.stream_ports).toEqual([]);
+    expect(cfg.advanced_yaml).toBeNull();
+    expect(cfg.enabled).toBe(true);
+  });
+
+  it("maps a host with mixed locations (proxy + static + redirect)", () => {
+    const host = {
+      id: 2,
+      groupId: null,
+      domains: ["multi.example.com"],
+      sslType: "none",
+      sslForceHttps: false,
+      sslCertPath: null,
+      sslKeyPath: null,
+      hsts: false,
+      http2: true,
+      locations: [
+        {
+          path: "/api",
+          matchType: "prefix",
+          type: "proxy",
+          upstreams: [{ server: "10.0.0.2", port: 3000, weight: 1 }],
+          balanceMethod: "least_conn",
+          staticDir: "",
+          cacheExpires: "",
+          forwardScheme: "https",
+          forwardDomain: "",
+          forwardPath: "/",
+          preservePath: true,
+          statusCode: 301,
+          headers: {},
+          accessListId: null,
+        },
+        {
+          path: "/assets",
+          matchType: "prefix",
+          type: "static",
+          upstreams: [],
+          balanceMethod: "round_robin",
+          staticDir: "/var/www/static",
+          cacheExpires: "30d",
+          forwardScheme: "https",
+          forwardDomain: "",
+          forwardPath: "/",
+          preservePath: true,
+          statusCode: 301,
+          headers: {},
+          accessListId: null,
+        },
+        {
+          path: "/old",
+          matchType: "exact",
+          type: "redirect",
+          upstreams: [],
+          balanceMethod: "round_robin",
+          staticDir: "",
+          cacheExpires: "",
+          forwardScheme: "https",
+          forwardDomain: "new.example.com",
+          forwardPath: "/new",
+          preservePath: false,
+          statusCode: 302,
+          headers: {},
+          accessListId: null,
+        },
+      ],
+      streamPorts: [],
+      advancedYaml: null,
+      enabled: true,
+    } as any;
+
+    const cfg = buildHostConfig(host);
+
+    expect(cfg.locations).toHaveLength(3);
+
+    // Proxy location
+    expect(cfg.locations[0].type).toBe("proxy");
+    expect(cfg.locations[0].path).toBe("/api");
+    expect(cfg.locations[0].upstreams).toHaveLength(1);
+    expect(cfg.locations[0].balanceMethod).toBe("least_conn");
+
+    // Static location
+    expect(cfg.locations[1].type).toBe("static");
+    expect(cfg.locations[1].path).toBe("/assets");
+    expect(cfg.locations[1].staticDir).toBe("/var/www/static");
+    expect(cfg.locations[1].cacheExpires).toBe("30d");
+
+    // Redirect location
+    expect(cfg.locations[2].type).toBe("redirect");
+    expect(cfg.locations[2].path).toBe("/old");
+    expect(cfg.locations[2].matchType).toBe("exact");
+    expect(cfg.locations[2].forwardScheme).toBe("https");
+    expect(cfg.locations[2].forwardDomain).toBe("new.example.com");
+    expect(cfg.locations[2].forwardPath).toBe("/new");
+    expect(cfg.locations[2].preservePath).toBe(false);
+    expect(cfg.locations[2].statusCode).toBe(302);
+  });
+
+  it("maps a host with stream ports", () => {
+    const host = {
+      id: 3,
+      groupId: null,
+      domains: ["stream.example.com"],
+      sslType: "none",
+      sslForceHttps: false,
+      sslCertPath: null,
+      sslKeyPath: null,
+      hsts: false,
+      http2: false,
+      locations: [],
+      streamPorts: [
+        {
+          port: 3306,
+          protocol: "tcp",
+          upstreams: [{ server: "db.internal", port: 3306, weight: 1 }],
+          balanceMethod: "least_conn",
+        },
+      ],
+      advancedYaml: null,
+      enabled: true,
+    } as any;
+
+    const cfg = buildHostConfig(host);
+
+    expect(cfg.locations).toEqual([]);
+    expect(cfg.stream_ports).toHaveLength(1);
+    expect(cfg.stream_ports[0]).toEqual({
+      port: 3306,
+      protocol: "tcp",
+      upstreams: [{ server: "db.internal", port: 3306, weight: 1 }],
+      balance_method: "least_conn",
     });
   });
 
-  it("sets upstreams to empty array and balance_method to round_robin", () => {
-    const cfg = buildStaticHostConfig(host);
-    expect(cfg.upstreams).toEqual([]);
-    expect(cfg.balance_method).toBe("round_robin");
-  });
+  it("applies defaults for missing optional location fields", () => {
+    const host = {
+      id: 4,
+      groupId: null,
+      domains: ["minimal.example.com"],
+      sslType: "none",
+      sslForceHttps: false,
+      sslCertPath: null,
+      sslKeyPath: null,
+      hsts: false,
+      http2: false,
+      locations: [
+        {
+          path: "/",
+          matchType: "prefix",
+          type: "proxy",
+          // All optional fields omitted
+        },
+      ],
+      streamPorts: null,
+      advancedYaml: null,
+      enabled: true,
+    } as any;
 
-  it("maps SSL and common fields correctly", () => {
-    const cfg = buildStaticHostConfig(host);
-    expect(cfg.domains).toEqual(["static.example.com"]);
-    expect(cfg.ssl.type).toBe("none");
-    expect(cfg.hsts).toBe(false);
-    expect(cfg.http2).toBe(true);
-    expect(cfg.enabled).toBe(true);
-  });
-});
+    const cfg = buildHostConfig(host);
 
-describe("buildRedirectConfig", () => {
-  const redirect = {
-    id: 10,
-    domains: ["old.com"],
-    forwardScheme: "https",
-    forwardDomain: "new.com",
-    forwardPath: "/landing",
-    preservePath: false,
-    statusCode: 302,
-    sslType: "none",
-    enabled: true,
-  } as any;
-
-  it("maps camelCase to snake_case", () => {
-    const cfg = buildRedirectConfig(redirect);
-    expect(cfg.forward_scheme).toBe("https");
-    expect(cfg.forward_domain).toBe("new.com");
-    expect(cfg.forward_path).toBe("/landing");
-    expect(cfg.preserve_path).toBe(false);
-    expect(cfg.status_code).toBe(302);
-    expect(cfg.ssl_type).toBe("none");
-  });
-});
-
-describe("buildStreamConfig", () => {
-  const stream = {
-    id: 3,
-    incomingPort: 3306,
-    protocol: "tcp",
-    upstreams: [{ server: "db.internal", port: 3306, weight: 1 }],
-    balanceMethod: "least_conn",
-    enabled: true,
-  } as any;
-
-  it("maps camelCase to snake_case", () => {
-    const cfg = buildStreamConfig(stream);
-    expect(cfg.incoming_port).toBe(3306);
-    expect(cfg.balance_method).toBe("least_conn");
-    expect(cfg.protocol).toBe("tcp");
-    expect(cfg.upstreams).toHaveLength(1);
+    expect(cfg.locations[0].upstreams).toEqual([]);
+    expect(cfg.locations[0].balanceMethod).toBe("round_robin");
+    expect(cfg.locations[0].staticDir).toBe("");
+    expect(cfg.locations[0].cacheExpires).toBe("");
+    expect(cfg.locations[0].forwardScheme).toBe("https");
+    expect(cfg.locations[0].forwardDomain).toBe("");
+    expect(cfg.locations[0].forwardPath).toBe("/");
+    expect(cfg.locations[0].preservePath).toBe(true);
+    expect(cfg.locations[0].statusCode).toBe(301);
+    expect(cfg.locations[0].headers).toEqual({});
+    expect(cfg.locations[0].access_list_id).toBeNull();
+    expect(cfg.stream_ports).toEqual([]);
   });
 });
 
@@ -153,9 +264,9 @@ describe("buildGlobalConfig", () => {
   });
 });
 
-// ─── Security: malicious / edge-case inputs ──────────────
+// --- Security: malicious / edge-case inputs ---
 
-describe("buildProxyHostConfig edge cases", () => {
+describe("buildHostConfig edge cases", () => {
   it("handles XSS in domain names", () => {
     const host = {
       id: 1,
@@ -165,15 +276,14 @@ describe("buildProxyHostConfig edge cases", () => {
       sslForceHttps: false,
       sslCertPath: null,
       sslKeyPath: null,
-      upstreams: [],
-      balanceMethod: "round_robin",
-      locations: [],
       hsts: false,
       http2: false,
+      locations: [],
+      streamPorts: [],
       advancedYaml: null,
       enabled: true,
     } as any;
-    const cfg = buildProxyHostConfig(host);
+    const cfg = buildHostConfig(host);
     // Should pass through as-is (YAML serialization handles escaping)
     expect(cfg.domains[0]).toBe("<script>alert(1)</script>.com");
   });
@@ -187,16 +297,15 @@ describe("buildProxyHostConfig edge cases", () => {
       sslForceHttps: true,
       sslCertPath: "../../../etc/shadow",
       sslKeyPath: "../../../etc/shadow",
-      upstreams: [],
-      balanceMethod: "round_robin",
-      locations: [],
       hsts: false,
       http2: false,
+      locations: [],
+      streamPorts: [],
       advancedYaml: null,
       enabled: true,
     } as any;
-    const cfg = buildProxyHostConfig(host);
-    // Builder is pure — it maps data, doesn't validate paths
+    const cfg = buildHostConfig(host);
+    // Builder is pure -- it maps data, doesn't validate paths
     // Validation must happen at the API/form level
     expect(cfg.ssl.cert_path).toBe("../../../etc/shadow");
     expect(cfg.ssl.key_path).toBe("../../../etc/shadow");
@@ -211,15 +320,14 @@ describe("buildProxyHostConfig edge cases", () => {
       sslForceHttps: false,
       sslCertPath: null,
       sslKeyPath: null,
-      upstreams: [],
-      balanceMethod: "round_robin",
-      locations: [],
       hsts: false,
       http2: false,
+      locations: [],
+      streamPorts: [],
       advancedYaml: null,
       enabled: false,
     } as any;
-    const cfg = buildProxyHostConfig(host);
+    const cfg = buildHostConfig(host);
     expect(cfg.domains).toEqual([]);
     expect(cfg.enabled).toBe(false);
   });
@@ -233,111 +341,183 @@ describe("buildProxyHostConfig edge cases", () => {
       sslForceHttps: false,
       sslCertPath: null,
       sslKeyPath: null,
-      upstreams: [],
-      balanceMethod: "round_robin",
-      locations: [],
       hsts: false,
       http2: false,
+      locations: [],
+      streamPorts: [],
       advancedYaml: "malicious:\n  - command: rm -rf /",
       enabled: true,
     } as any;
-    const cfg = buildProxyHostConfig(host);
-    // Builder preserves the raw YAML string — Rust parser must sanitize
+    const cfg = buildHostConfig(host);
+    // Builder preserves the raw YAML string -- Rust parser must sanitize
     expect(cfg.advanced_yaml).toContain("rm -rf /");
   });
-});
 
-describe("buildRedirectConfig edge cases", () => {
-  it("handles open redirect attempt in forward_domain", () => {
-    const redirect = {
+  it("handles open redirect attempt in location forward_domain", () => {
+    const host = {
       id: 1,
+      groupId: null,
       domains: ["safe.com"],
-      forwardScheme: "https",
-      forwardDomain: "evil.com",
-      forwardPath: "/phishing",
-      preservePath: true,
-      statusCode: 302,
       sslType: "none",
+      sslForceHttps: false,
+      sslCertPath: null,
+      sslKeyPath: null,
+      hsts: false,
+      http2: false,
+      locations: [
+        {
+          path: "/",
+          matchType: "prefix",
+          type: "redirect",
+          forwardScheme: "https",
+          forwardDomain: "evil.com",
+          forwardPath: "/phishing",
+          preservePath: true,
+          statusCode: 302,
+        },
+      ],
+      streamPorts: [],
+      advancedYaml: null,
       enabled: true,
     } as any;
-    const cfg = buildRedirectConfig(redirect);
-    expect(cfg.forward_domain).toBe("evil.com");
-    expect(cfg.forward_path).toBe("/phishing");
+    const cfg = buildHostConfig(host);
+    expect(cfg.locations[0].forwardDomain).toBe("evil.com");
+    expect(cfg.locations[0].forwardPath).toBe("/phishing");
   });
 
-  it("handles javascript: scheme in forward_scheme", () => {
-    const redirect = {
+  it("handles javascript: scheme in location forwardScheme", () => {
+    const host = {
       id: 1,
+      groupId: null,
       domains: ["test.com"],
-      forwardScheme: "javascript:",
-      forwardDomain: "alert(1)",
-      forwardPath: "",
-      preservePath: false,
-      statusCode: 301,
       sslType: "none",
+      sslForceHttps: false,
+      sslCertPath: null,
+      sslKeyPath: null,
+      hsts: false,
+      http2: false,
+      locations: [
+        {
+          path: "/",
+          matchType: "prefix",
+          type: "redirect",
+          forwardScheme: "javascript:",
+          forwardDomain: "alert(1)",
+          forwardPath: "",
+          preservePath: false,
+          statusCode: 301,
+        },
+      ],
+      streamPorts: [],
+      advancedYaml: null,
       enabled: true,
     } as any;
-    const cfg = buildRedirectConfig(redirect);
-    // Builder maps as-is — validation is API layer responsibility
-    expect(cfg.forward_scheme).toBe("javascript:");
+    const cfg = buildHostConfig(host);
+    // Builder maps as-is -- validation is API layer responsibility
+    expect(cfg.locations[0].forwardScheme).toBe("javascript:");
   });
 
-  it("handles invalid status codes", () => {
-    const redirect = {
+  it("handles invalid status codes in location", () => {
+    const host = {
       id: 1,
+      groupId: null,
       domains: ["test.com"],
-      forwardScheme: "https",
-      forwardDomain: "new.com",
-      forwardPath: "/",
-      preservePath: true,
-      statusCode: 999,
       sslType: "none",
+      sslForceHttps: false,
+      sslCertPath: null,
+      sslKeyPath: null,
+      hsts: false,
+      http2: false,
+      locations: [
+        {
+          path: "/",
+          matchType: "prefix",
+          type: "redirect",
+          forwardScheme: "https",
+          forwardDomain: "new.com",
+          forwardPath: "/",
+          preservePath: true,
+          statusCode: 999,
+        },
+      ],
+      streamPorts: [],
+      advancedYaml: null,
       enabled: true,
     } as any;
-    const cfg = buildRedirectConfig(redirect);
-    expect(cfg.status_code).toBe(999);
-  });
-});
-
-describe("buildStreamConfig edge cases", () => {
-  it("handles port 0", () => {
-    const stream = {
-      id: 1,
-      incomingPort: 0,
-      protocol: "tcp",
-      upstreams: [],
-      balanceMethod: "round_robin",
-      enabled: true,
-    } as any;
-    const cfg = buildStreamConfig(stream);
-    expect(cfg.incoming_port).toBe(0);
-  });
-
-  it("handles privileged port", () => {
-    const stream = {
-      id: 1,
-      incomingPort: 22,
-      protocol: "tcp",
-      upstreams: [{ server: "attacker.com", port: 22, weight: 1 }],
-      balanceMethod: "round_robin",
-      enabled: true,
-    } as any;
-    const cfg = buildStreamConfig(stream);
-    expect(cfg.incoming_port).toBe(22);
-    expect(cfg.upstreams[0].server).toBe("attacker.com");
+    const cfg = buildHostConfig(host);
+    expect(cfg.locations[0].statusCode).toBe(999);
   });
 
-  it("handles unknown protocol", () => {
-    const stream = {
+  it("handles stream port 0", () => {
+    const host = {
       id: 1,
-      incomingPort: 8080,
-      protocol: "sctp",
-      upstreams: [],
-      balanceMethod: "round_robin",
+      groupId: null,
+      domains: [],
+      sslType: "none",
+      sslForceHttps: false,
+      sslCertPath: null,
+      sslKeyPath: null,
+      hsts: false,
+      http2: false,
+      locations: [],
+      streamPorts: [
+        { port: 0, protocol: "tcp", upstreams: [], balanceMethod: "round_robin" },
+      ],
+      advancedYaml: null,
       enabled: true,
     } as any;
-    const cfg = buildStreamConfig(stream);
-    expect(cfg.protocol).toBe("sctp");
+    const cfg = buildHostConfig(host);
+    expect(cfg.stream_ports[0].port).toBe(0);
+  });
+
+  it("handles privileged stream port", () => {
+    const host = {
+      id: 1,
+      groupId: null,
+      domains: [],
+      sslType: "none",
+      sslForceHttps: false,
+      sslCertPath: null,
+      sslKeyPath: null,
+      hsts: false,
+      http2: false,
+      locations: [],
+      streamPorts: [
+        {
+          port: 22,
+          protocol: "tcp",
+          upstreams: [{ server: "attacker.com", port: 22, weight: 1 }],
+          balanceMethod: "round_robin",
+        },
+      ],
+      advancedYaml: null,
+      enabled: true,
+    } as any;
+    const cfg = buildHostConfig(host);
+    expect(cfg.stream_ports[0].port).toBe(22);
+    expect(cfg.stream_ports[0].upstreams[0].server).toBe("attacker.com");
+  });
+
+  it("handles unknown stream protocol", () => {
+    const host = {
+      id: 1,
+      groupId: null,
+      domains: [],
+      sslType: "none",
+      sslForceHttps: false,
+      sslCertPath: null,
+      sslKeyPath: null,
+      hsts: false,
+      http2: false,
+      locations: [],
+      streamPorts: [
+        { port: 8080, protocol: "sctp", upstreams: [], balanceMethod: "round_robin" },
+      ],
+      advancedYaml: null,
+      enabled: true,
+    } as any;
+    const cfg = buildHostConfig(host);
+    expect(cfg.stream_ports[0].protocol).toBe("sctp");
   });
 });
 
