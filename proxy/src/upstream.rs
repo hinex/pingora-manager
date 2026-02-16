@@ -80,7 +80,8 @@ where
                 continue;
             }
         };
-        match Backend::new_with_weight(&resolved, upstream.weight) {
+        let weight = upstream.weight.min(1000);
+        match Backend::new_with_weight(&resolved, weight) {
             Ok(backend) => {
                 backend_set.insert(backend);
             }

@@ -141,6 +141,8 @@ services:
     volumes:
       - ./configs/pingora:/data/configs:ro
       - ./backend/public:/public:ro
+    tmpfs:
+      - /data/logs:size=1m
     depends_on:
       backend:
         condition: service_healthy

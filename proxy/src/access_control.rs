@@ -1,4 +1,4 @@
-use crate::config::AccessListConfig;
+use crate::config::{AccessListConfig, ParsedCidr};
 use std::net::IpAddr;
 
 /// Result of access control check
@@ -73,11 +73,44 @@ fn check_ip_access(access_list: &AccessListConfig, client_ip: Option<&IpAddr>) -
     // Evaluate rules in order. Last matching rule wins (like nginx).
     let mut result = false; // default deny if there are rules
     for client in &access_list.clients {
-        if ip_matches_cidr(ip, &client.address) {
+        // Use pre-parsed CIDR for zero-parse matching, fall back to string parsing
+        let matched = if let Some(ref parsed) = client.parsed_cidr {
+            ip_matches_parsed(ip, parsed)
+        } else {
+            ip_matches_cidr(ip, &client.address)
+        };
+        if matched {
             result = client.directive == "allow";
         }
     }
     result
+}
+
+/// Fast CIDR matching using pre-parsed IP and prefix length (zero parsing at request time)
+fn ip_matches_parsed(client_ip: &IpAddr, parsed: &ParsedCidr) -> bool {
+    match (client_ip, &parsed.ip) {
+        (IpAddr::V4(client), IpAddr::V4(network)) => {
+            if parsed.prefix_len > 32 {
+                return false;
+            }
+            if parsed.prefix_len == 0 {
+                return true;
+            }
+            let mask = u32::MAX.checked_shl(32 - parsed.prefix_len).unwrap_or(0);
+            (u32::from(*client) & mask) == (u32::from(*network) & mask)
+        }
+        (IpAddr::V6(client), IpAddr::V6(network)) => {
+            if parsed.prefix_len > 128 {
+                return false;
+            }
+            if parsed.prefix_len == 0 {
+                return true;
+            }
+            let mask = u128::MAX.checked_shl(128 - parsed.prefix_len).unwrap_or(0);
+            (u128::from(*client) & mask) == (u128::from(*network) & mask)
+        }
+        _ => false,
+    }
 }
 
 /// Check whether a given IP matches a CIDR notation address.
@@ -207,6 +240,7 @@ mod tests {
                 .map(|(addr, dir)| AccessListClient {
                     address: addr.to_string(),
                     directive: dir.to_string(),
+                    parsed_cidr: None,
                 })
                 .collect(),
             auth: auth
