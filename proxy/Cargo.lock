@@ -1323,7 +1323,7 @@ dependencies = [
 
 [[package]]
 name = "pingora-manager-proxy"
-version = "1.4.1"
+version = "1.4.2"
 dependencies = [
  "arc-swap",
  "async-trait",
