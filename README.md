@@ -1,4 +1,4 @@
-# Pingora Manager
+# Pingora Manager (Experimental)
 
 A high-performance reverse proxy management system built on [Cloudflare's Pingora](https://github.com/cloudflare/pingora) framework, with a modern web-based admin UI.
 
